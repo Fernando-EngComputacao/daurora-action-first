@@ -1,0 +1,12 @@
+{
+  "key": "validarDocumentosCmd",
+  "name": "Validar Documentos (comando para microsserviço validador)",
+  "correlationParameters": [
+    { "name": "checadorId", "type": "string" }
+  ],
+  "payload": [
+    { "name": "checadorId",   "type": "string" },
+    { "name": "nomeCompleto", "type": "string" },
+    { "name": "documentos",   "type": "string" }
+  ]
+}

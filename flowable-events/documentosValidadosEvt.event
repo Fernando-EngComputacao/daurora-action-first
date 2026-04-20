@@ -1,0 +1,11 @@
+{
+  "key": "documentosValidadosEvt",
+  "name": "Documentos Validados (evento de retorno do validador)",
+  "correlationParameters": [
+    { "name": "checadorId", "type": "string" }
+  ],
+  "payload": [
+    { "name": "checadorId",        "type": "string"  },
+    { "name": "documentosValidos", "type": "boolean" }
+  ]
+}

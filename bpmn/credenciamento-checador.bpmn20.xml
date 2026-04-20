@@ -1,0 +1,126 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL"
+             xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+             xmlns:flowable="http://flowable.org/bpmn"
+             xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+             xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+             xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+             targetNamespace="http://aurora.daurora/bpmn"
+             typeLanguage="http://www.w3.org/2001/XMLSchema"
+             expressionLanguage="http://www.w3.org/1999/XPath">
+
+  <process id="credenciamentoChecador" name="Credenciamento de Checador (RF08)" isExecutable="true">
+
+    <startEvent id="startNovaSolicitacao" name="Nova Solicitação de Credenciamento">
+      <extensionElements>
+        <flowable:formProperty id="checadorId" name="ID do Checador" type="string" required="true"/>
+        <flowable:formProperty id="nomeCompleto" name="Nome Completo" type="string" required="true"/>
+        <flowable:formProperty id="documentos" name="Documentos (URLs)" type="string" required="true"/>
+      </extensionElements>
+    </startEvent>
+
+    <sequenceFlow id="flowStartToSend" sourceRef="startNovaSolicitacao" targetRef="enviarValidarDocs"/>
+
+    <serviceTask id="enviarValidarDocs"
+                 name="Solicitar Validação de Documentos"
+                 flowable:type="send-event">
+      <extensionElements>
+        <flowable:eventType>validarDocumentosCmd</flowable:eventType>
+        <flowable:channelKey>validarDocumentosCmdChannel</flowable:channelKey>
+        <flowable:eventInParameter sourceExpression="${checadorId}" target="checadorId"/>
+        <flowable:eventInParameter sourceExpression="${nomeCompleto}" target="nomeCompleto"/>
+        <flowable:eventInParameter sourceExpression="${documentos}" target="documentos"/>
+      </extensionElements>
+    </serviceTask>
+
+    <sequenceFlow id="flowSendToReceive" sourceRef="enviarValidarDocs" targetRef="aguardarValidacao"/>
+
+    <receiveTask id="aguardarValidacao"
+                 name="Aguardar Resultado da Validação">
+      <extensionElements>
+        <flowable:eventType>documentosValidadosEvt</flowable:eventType>
+        <flowable:channelKey>documentosValidadosEvtChannel</flowable:channelKey>
+        <flowable:eventCorrelationParameter name="checadorId" value="${checadorId}"/>
+        <flowable:eventOutParameter source="documentosValidos" target="documentosValidos"/>
+      </extensionElements>
+    </receiveTask>
+
+    <sequenceFlow id="flowReceiveToGateway" sourceRef="aguardarValidacao" targetRef="gatewayDocsValidos"/>
+
+    <exclusiveGateway id="gatewayDocsValidos" name="Documentos Válidos?"/>
+
+    <sequenceFlow id="flowAprovada" sourceRef="gatewayDocsValidos" targetRef="analiseCuratorial">
+      <conditionExpression xsi:type="tFormalExpression">${documentosValidos == true}</conditionExpression>
+    </sequenceFlow>
+
+    <sequenceFlow id="flowRejeitada" sourceRef="gatewayDocsValidos" targetRef="endRejeitada">
+      <conditionExpression xsi:type="tFormalExpression">${documentosValidos == false}</conditionExpression>
+    </sequenceFlow>
+
+    <userTask id="analiseCuratorial"
+              name="Análise Curatorial"
+              flowable:candidateGroups="curadores">
+      <documentation>
+        Revisar manualmente a documentação do candidato a checador e aprovar ou reprovar o credenciamento.
+      </documentation>
+      <extensionElements>
+        <flowable:formProperty id="checadorId" name="ID do Checador" type="string" writable="false"/>
+        <flowable:formProperty id="nomeCompleto" name="Nome Completo" type="string" writable="false"/>
+        <flowable:formProperty id="decisaoFinal" name="Decisão Final" type="enum" required="true">
+          <flowable:value id="credenciar" name="Credenciar"/>
+          <flowable:value id="recusar" name="Recusar"/>
+        </flowable:formProperty>
+      </extensionElements>
+    </userTask>
+
+    <sequenceFlow id="flowUserToEnd" sourceRef="analiseCuratorial" targetRef="endCredenciado"/>
+
+    <endEvent id="endCredenciado" name="Checador Credenciado"/>
+    <endEvent id="endRejeitada" name="Solicitação Rejeitada Automaticamente"/>
+
+  </process>
+
+  <bpmndi:BPMNDiagram id="diagramCredenciamento">
+    <bpmndi:BPMNPlane id="planeCredenciamento" bpmnElement="credenciamentoChecador">
+      <bpmndi:BPMNShape id="shape_start" bpmnElement="startNovaSolicitacao">
+        <dc:Bounds x="100" y="180" width="36" height="36"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="shape_send" bpmnElement="enviarValidarDocs">
+        <dc:Bounds x="200" y="158" width="120" height="80"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="shape_receive" bpmnElement="aguardarValidacao">
+        <dc:Bounds x="380" y="158" width="120" height="80"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="shape_gateway" bpmnElement="gatewayDocsValidos" isMarkerVisible="true">
+        <dc:Bounds x="560" y="175" width="50" height="50"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="shape_usertask" bpmnElement="analiseCuratorial">
+        <dc:Bounds x="680" y="80" width="120" height="80"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="shape_end_ok" bpmnElement="endCredenciado">
+        <dc:Bounds x="860" y="102" width="36" height="36"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="shape_end_nok" bpmnElement="endRejeitada">
+        <dc:Bounds x="860" y="258" width="36" height="36"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="edge_start_send" bpmnElement="flowStartToSend">
+        <di:waypoint x="136" y="198"/><di:waypoint x="200" y="198"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="edge_send_receive" bpmnElement="flowSendToReceive">
+        <di:waypoint x="320" y="198"/><di:waypoint x="380" y="198"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="edge_receive_gateway" bpmnElement="flowReceiveToGateway">
+        <di:waypoint x="500" y="198"/><di:waypoint x="560" y="200"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="edge_gateway_user" bpmnElement="flowAprovada">
+        <di:waypoint x="585" y="175"/><di:waypoint x="585" y="120"/><di:waypoint x="680" y="120"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="edge_gateway_end_nok" bpmnElement="flowRejeitada">
+        <di:waypoint x="585" y="225"/><di:waypoint x="585" y="276"/><di:waypoint x="860" y="276"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="edge_user_end_ok" bpmnElement="flowUserToEnd">
+        <di:waypoint x="800" y="120"/><di:waypoint x="860" y="120"/>
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</definitions>

@@ -1,0 +1,13 @@
+{
+  "key": "documentosValidadosEvtChannel",
+  "category": "channel",
+  "name": "Canal Inbound - documentos-validados-evt",
+  "channelType": "inbound",
+  "type": "kafka",
+  "topics": ["documentos-validados-evt"],
+  "groupId": "flowable-event-registry",
+  "deserializerType": "json",
+  "channelEventKeyDetection": {
+    "fixedValue": "documentosValidadosEvt"
+  }
+}

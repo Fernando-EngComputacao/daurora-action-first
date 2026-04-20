@@ -1,32 +1,54 @@
 services:
   flowable:
     image: flowable/flowable-ui:latest
+    container_name: aurora-flowable
     ports:
       - "8080:8080"
+    depends_on:
+      - kafka
+    environment:
+      # --- Ativa o Event Registry + Kafka no Flowable UI Task app ---
+      # Sem estas flags, a imagem aplica a condição FlowableUiAppEventRegistryCondition
+      # e pula a KafkaAutoConfiguration + EventRegistryKafkaConfiguration.
+      - FLOWABLE_TASK_APP_EVENT_REGISTRY_ENABLED=true
+      - FLOWABLE_TASK_APP_KAFKA_ENABLED=true
+      # --- Conexão com Kafka (Spring Kafka) ---
+      # Obs.: o Spring Boot exige underscores entre cada parte kebab-case do nome da propriedade.
+      - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - SPRING_KAFKA_CONSUMER_GROUP_ID=flowable-event-registry
+      - SPRING_KAFKA_CONSUMER_AUTO_OFFSET_RESET=earliest
+      # --- Logging opcional para inspeção durante a demo ---
+      - LOGGING_LEVEL_ORG_FLOWABLE_EVENTREGISTRY=INFO
+      - LOGGING_LEVEL_ORG_SPRINGFRAMEWORK_KAFKA=INFO
 
   kafka:
     image: apache/kafka:3.7.0
+    container_name: aurora-kafka
     ports:
-      - "9092:9092"
+      - "9092:9092"   # acesso do host (ex.: microsserviços Node.js rodando fora do Docker)
     environment:
       - KAFKA_NODE_ID=1
       - KAFKA_PROCESS_ROLES=broker,controller
-      - KAFKA_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093
-      - KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://localhost:9092
+      # Dois listeners: INTERNAL para tráfego entre containers, EXTERNAL para o host.
+      - KAFKA_LISTENERS=INTERNAL://:29092,EXTERNAL://:9092,CONTROLLER://:9093
+      - KAFKA_ADVERTISED_LISTENERS=INTERNAL://kafka:29092,EXTERNAL://localhost:9092
+      - KAFKA_INTER_BROKER_LISTENER_NAME=INTERNAL
       - KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER
-      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
       - KAFKA_CONTROLLER_QUORUM_VOTERS=1@localhost:9093
       - KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1
       - KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1
       - KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1
+      - KAFKA_AUTO_CREATE_TOPICS_ENABLE=true
       - CLUSTER_ID=5L6g3nShT-eMCtK--X86sw
 
   kafka-ui:
-      image: provectuslabs/kafka-ui:latest
-      ports:
-        - "8081:8080" # Acessível na porta 8081 para não conflitar com o Flowable
-      depends_on:
-        - kafka
-      environment:
-        - KAFKA_CLUSTERS_0_NAME=Meu-Cluster-Aurora
-        - KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS=kafka:9092
+    image: provectuslabs/kafka-ui:latest
+    container_name: aurora-kafka-ui
+    ports:
+      - "8081:8080"   # Acessível na porta 8081 para não conflitar com o Flowable
+    depends_on:
+      - kafka
+    environment:
+      - KAFKA_CLUSTERS_0_NAME=Meu-Cluster-Aurora
+      - KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS=kafka:29092

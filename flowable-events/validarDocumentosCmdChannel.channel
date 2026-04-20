@@ -1,0 +1,9 @@
+{
+  "key": "validarDocumentosCmdChannel",
+  "category": "channel",
+  "name": "Canal Outbound - validar-documentos-cmd",
+  "channelType": "outbound",
+  "type": "kafka",
+  "topic": "validar-documentos-cmd",
+  "serializerType": "json"
+}
