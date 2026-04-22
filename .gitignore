@@ -20,3 +20,6 @@ yarn-error.log*
 .idea/
 .DS_Store
 Thumbs.db
+
+# Notas locais / rascunhos (fora do versionamento)
+.dev/

@@ -34,6 +34,12 @@ daurora-action-first/
 │   ├── documentosValidadosEvt.event         # Evento de entrada (resultado)
 │   └── documentosValidadosEvtChannel.channel # Canal Kafka inbound
 │
+├── scripts/                        # Automação dos comandos do README
+│   ├── healthcheck.sh
+│   ├── deploy-flowable.sh
+│   ├── disparar-credenciamento.sh
+│   └── completar-tarefa.sh
+│
 └── services/
     ├── aurora-credenciamento-api/  # Produtor: dispara o processo via REST do Flowable
     │   ├── package.json
@@ -132,13 +138,22 @@ Serviços disponíveis:
 
 A base do Flowable UI é H2 in-memory, então **toda vez que o container reinicia os deploys são perdidos** e precisam ser refeitos.
 
-O caminho mais rápido é via REST, **um arquivo por chamada** (a API rejeita mais de um `file=` por deployment):
+O caminho automatizado é o script da seção de automação do repositório:
+
+```bash
+./scripts/deploy-flowable.sh
+```
+
+Ele publica os 4 arquivos de `flowable-events/` (um `POST` por arquivo — ver §8 pegadinha #7), depois o BPMN, e valida que `process-definitions?key=credenciamentoChecador` retorna `total>=1`. Aceita `FLOWABLE_URL`/`FLOWABLE_USER`/`FLOWABLE_PASS` como variáveis de ambiente para apontar para outro host/credencial. Ver [`scripts/README.md`](./scripts/README.md) para o contrato completo.
+
+Alternativa pela UI: acessar *Modeler App*, importar cada arquivo individualmente (menus *Channels*, *Events*, *Processes*) e publicar um *App Definition* que agrupe os 4 artefatos.
+
+Alternativa manual via REST (útil para debug, equivale ao que o script faz):
 
 ```bash
 BASE=http://localhost:8080/flowable-ui
 AUTH='-u admin:test'
 
-# 1) Eventos e canais (Event Registry)
 for f in flowable-events/validarDocumentosCmd.event \
          flowable-events/documentosValidadosEvt.event \
          flowable-events/validarDocumentosCmdChannel.channel \
@@ -147,12 +162,9 @@ for f in flowable-events/validarDocumentosCmd.event \
     "$BASE/event-registry-api/event-registry-repository/deployments" | head -c 120; echo
 done
 
-# 2) Processo BPMN (depois dos canais, porque o BPMN referencia channelKey)
 curl -s $AUTH -F "file=@bpmn/credenciamento-checador.bpmn20.xml" \
   "$BASE/process-api/repository/deployments"
 ```
-
-Alternativa pela UI: acessar *Modeler App*, importar cada arquivo individualmente (menus *Channels*, *Events*, *Processes*) e publicar um *App Definition* que agrupe os 4 artefatos.
 
 ### 5.3 Microsserviços
 
@@ -251,4 +263,4 @@ Confirmadas durante a integração; todas já estão aplicadas neste repositóri
 - **Novo microsserviço reativo**: criar `services/<nome>/` no mesmo padrão; declarar o canal/evento em `flowable-events/` e referenciar no BPMN via `<serviceTask flowable:type="send-event">` ou `<receiveTask>` com `flowable:eventType` + `flowable:channelKey`.
 - **Nova etapa humana**: adicionar `UserTask` no BPMN e usar `flowable:candidateGroups` apontando para grupos definidos no IDM App do Flowable.
 - **Persistência real do Flowable**: hoje o container usa H2 in-memory (dados somem ao reiniciar). Para demo estendida, anexar um banco externo (Postgres) via `SPRING_DATASOURCE_*` + volume para o container do Flowable.
-- **Automatizar o redeploy**: transformar o bloco `curl ... for f in ...` do §5.2 num script `scripts/deploy-flowable.sh`, chamado automaticamente após `docker compose up`.
+- **Automatizar o redeploy no boot**: o script `scripts/deploy-flowable.sh` já existe; falta encadeá-lo a `docker compose up` (healthcheck do container + hook ou `Makefile`) para eliminar o passo manual.

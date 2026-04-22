@@ -37,6 +37,12 @@ daurora-action-first/
 │   ├── documentosValidadosEvt.event
 │   └── documentosValidadosEvtChannel.channel
 │
+├── scripts/                        # Automação dos comandos do README
+│   ├── healthcheck.sh
+│   ├── deploy-flowable.sh
+│   ├── disparar-credenciamento.sh
+│   └── completar-tarefa.sh
+│
 └── services/
     ├── aurora-credenciamento-api/  # Produtor HTTP — dispara o processo no Flowable
     └── aurora-validador-docs/      # Consumidor reativo — valida documentos via Kafka
@@ -64,51 +70,21 @@ Isso provisiona três containers:
 | Kafka UI | http://localhost:8081 | — |
 | Kafka Broker (acesso do host) | `localhost:9092` | — |
 
-Aguarde ~30s para o Flowable terminar o boot. Para conferir, rode:
+Aguarde ~30s para o Flowable terminar o boot. O passo 2 a seguir já valida implicitamente que a REST do Flowable está no ar (falha rápido se não estiver).
 
-```bash
-curl -s -o /dev/null -w "%{http_code}\n" -u admin:test \
-  http://localhost:8080/flowable-ui/process-api/repository/process-definitions
-```
-
-Deve retornar `200`.
+> **Não rode `./scripts/healthcheck.sh` agora.** Ele confere também a API Node em `:3000/health`, que ainda nem foi iniciada — o checkpoint dele é o **passo 5**.
 
 ### 2. Fazer deploy do BPMN e do Event Registry no Flowable
 
 > **⚠️ Importante:** o Flowable UI usa um banco H2 em memória. **Toda vez que o container do Flowable reinicia, os deploys são perdidos.** Repita este passo após qualquer `docker compose restart flowable` ou `up -d` que recrie o container.
 
-Cole este bloco inteiro no terminal (a partir da raiz do repo):
-
 ```bash
-BASE=http://localhost:8080/flowable-ui
-AUTH='-u admin:test'
-
-# 1) Eventos e canais (Event Registry) — um arquivo por chamada
-for f in flowable-events/validarDocumentosCmd.event \
-         flowable-events/documentosValidadosEvt.event \
-         flowable-events/validarDocumentosCmdChannel.channel \
-         flowable-events/documentosValidadosEvtChannel.channel; do
-  echo "--- deploy $f"
-  curl -s $AUTH -F "file=@$f" \
-    "$BASE/event-registry-api/event-registry-repository/deployments" | head -c 160
-  echo
-done
-
-# 2) Processo BPMN (depende dos canais já existirem)
-echo "--- deploy BPMN"
-curl -s $AUTH -F "file=@bpmn/credenciamento-checador.bpmn20.xml" \
-  "$BASE/process-api/repository/deployments" | head -c 200
-echo
+./scripts/deploy-flowable.sh
 ```
 
-Valide:
+O script publica os 4 arquivos de `flowable-events/` (um `POST` por arquivo, que é como a API aceita — veja [ARCHITECTURE §8 pegadinha #7](./ARCHITECTURE.md#8-pegadinhas-da-imagem-flowableflowable-uilatest-680)), em seguida publica o BPMN, e ao final confere que `process-definitions?key=credenciamentoChecador` retorna `total>=1`. Sai com código `1` se alguma etapa falhar.
 
-```bash
-curl -s -u admin:test \
-  "$BASE/process-api/repository/process-definitions?key=credenciamentoChecador" \
-  | grep -o '"total":[0-9]*'
-# esperado: "total":1
-```
+Detalhes e variáveis de ambiente suportadas: [`scripts/README.md`](./scripts/README.md).
 
 ### 3. Instalar dependências dos microsserviços
 
@@ -150,14 +126,34 @@ Deve imprimir:
 [credenciamento-api] Flowable alvo: http://localhost:8080/flowable-ui (processKey=credenciamentoChecador)
 ```
 
-### 5. Disparar uma solicitação de credenciamento
+### 5. Checkpoint: tudo no ar?
 
-Em um terceiro terminal:
+Com os containers rodando (passo 1), o deploy feito (passo 2) e os dois `npm run dev` ativos (passo 4), rode agora o healthcheck completo em um terceiro terminal:
 
 ```bash
-curl -s -X POST http://localhost:3000/credenciamento \
-  -H 'Content-Type: application/json' \
-  -d '{"nomeCompleto":"Maria Oliveira","documentos":"https://exemplo/maria.pdf"}'
+./scripts/healthcheck.sh
+```
+
+Agora sim deve listar **HTTP 200** nas duas linhas:
+
+```
+  Flowable REST          http://localhost:8080/flowable-ui/...   HTTP 200
+  Aurora API /health     http://localhost:3000/health            HTTP 200
+OK — tudo no ar.
+```
+
+Se a linha da Aurora API vier `HTTP 000`, o serviço `aurora-credenciamento-api` não está rodando — volte ao passo 4.
+
+### 6. Disparar uma solicitação de credenciamento
+
+No mesmo terceiro terminal:
+
+```bash
+# Com defaults (nomeCompleto="Maria Oliveira", documentos="https://exemplo/maria.pdf")
+./scripts/disparar-credenciamento.sh
+
+# Ou com dados custom
+./scripts/disparar-credenciamento.sh "João Silva" "https://exemplo/joao.pdf"
 ```
 
 Resposta:
@@ -165,9 +161,9 @@ Resposta:
 { "checadorId": "<uuid>", "processInstanceId": "<id>" }
 ```
 
-Guarde o `processInstanceId` para o próximo passo.
+O script já imprime o `processInstanceId` em uma linha separada e sugere o comando do próximo passo.
 
-### 6. Observar o fluxo pelos logs
+### 7. Observar o fluxo pelos logs
 
 - **Terminal A** (validador) mostra `[IN ] ...` e depois `[OUT] ... documentosValidos=true|false`.
 - **Kafka UI** (http://localhost:8081) mostra mensagens trafegando nos tópicos `validar-documentos-cmd` e `documentos-validados-evt`.
@@ -176,32 +172,17 @@ Guarde o `processInstanceId` para o próximo passo.
   docker logs -f aurora-flowable | grep -iE "kafka|error"
   ```
 
-### 7. Completar a tarefa humana (se documentos foram aprovados)
+### 8. Completar a tarefa humana (se documentos foram aprovados)
 
-Quando `documentosValidos=true`, o Flowable cria a tarefa "Análise Curatorial". Encontre-a e conclua:
+Quando `documentosValidos=true`, o Flowable cria a tarefa "Análise Curatorial". Conclua com:
 
 ```bash
-PID="<processInstanceId_do_passo_5>"
-
-# Descobre o id da tarefa aberta
-TASK_ID=$(curl -s -u admin:test \
-  "http://localhost:8080/flowable-ui/process-api/runtime/tasks?processInstanceId=$PID" \
-  | grep -oE '"id":"[^"]+"' | head -1 | cut -d'"' -f4)
-echo "Task aberta: $TASK_ID"
-
-# Completa com decisão "credenciar"
-curl -s -u admin:test -X POST \
-  -H 'Content-Type: application/json' \
-  -d '{"action":"complete","variables":[{"name":"decisaoFinal","value":"credenciar"}]}' \
-  "http://localhost:8080/flowable-ui/process-api/runtime/tasks/$TASK_ID"
-echo
-
-# Checa que o processo encerrou em endCredenciado
-curl -s -u admin:test \
-  "http://localhost:8080/flowable-ui/process-api/history/historic-process-instances/$PID" \
-  | grep -oE '"endActivityId":"[^"]+"'
-# esperado: "endActivityId":"endCredenciado"
+./scripts/completar-tarefa.sh <processInstanceId> credenciar
+# ou para reprovar na curadoria:
+./scripts/completar-tarefa.sh <processInstanceId> recusar
 ```
+
+O script descobre a task aberta, faz o `POST` de conclusão com `decisaoFinal` e mostra o `endActivityId` final (esperado: `endCredenciado`). No BPMN atual, `credenciar`/`recusar` é apenas gravado como variável; o fluxo sempre converge para `endCredenciado` — veja [ARCHITECTURE §3](./ARCHITECTURE.md#3-modelo-de-processo-bpmn--rf08).
 
 Alternativamente, logue no **Flowable UI → Task App** (http://localhost:8080/flowable-ui) com `admin`/`test`, clique em *Tasks*, reivindique e complete a tarefa pela interface gráfica.
 
@@ -240,6 +221,7 @@ Alternativamente, logue no **Flowable UI → Task App** (http://localhost:8080/f
 
 | Sintoma | Causa provável | Como resolver |
 |---|---|---|
+| `./scripts/healthcheck.sh` mostra `Aurora API … HTTP 000` logo após `docker compose up -d` | A API Node em `:3000` ainda não foi iniciada — o `docker compose` só sobe a infra. | Seguir até o passo **4** (subir os dois `npm run dev`) antes de rodar o healthcheck. |
 | `curl` no endpoint `/credenciamento` retorna 500 com mensagem sobre "process definition not found" | BPMN ainda não foi deployado ou Flowable reiniciou e perdeu o deploy (H2 in-memory). | Rerodar o passo **2**. |
 | Logs do validador mostram `IN` mas o processo não avança | O `eventKey` no JSON de retorno não bate com `channelEventKeyDetection.fixedValue`. | Confirmar que `services/aurora-validador-docs/src/index.ts` envia `eventKey: "documentosValidadosEvt"`. |
 | Validador recebe `checadorId=checadorId` (string literal) | BPMN usando `source=` em vez de `sourceExpression=` no `eventInParameter`. | Garantir que `bpmn/credenciamento-checador.bpmn20.xml` usa `sourceExpression="${checadorId}"`. |
@@ -267,6 +249,6 @@ docker compose down
 
 ## 🔭 Próximos passos sugeridos
 
-- Migrar o Flowable para Postgres (volume persistente) para não perder deploys no restart.
-- Transformar o bloco de deploy do passo 2 em `scripts/deploy-flowable.sh` e chamá-lo automaticamente após o boot.
+- Migrar o Flowable para Postgres (volume persistente) para não perder deploys no restart — assim `./scripts/deploy-flowable.sh` deixa de ser necessário a cada reboot do container.
+- Encadear `./scripts/deploy-flowable.sh` automaticamente após `docker compose up -d` (via healthcheck + hook ou Makefile).
 - Adicionar novos microsserviços reativos em `services/` (ex.: `aurora-notificador-curadores`) reaproveitando o mesmo padrão de canais Kafka.
