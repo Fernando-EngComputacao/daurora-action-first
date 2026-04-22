@@ -12,6 +12,7 @@ const kafka = new Kafka({
 
 const consumer = kafka.consumer({ groupId: 'grupo-validador-docs-1' });
 const producer = kafka.producer();
+const admin = kafka.admin();
 
 type ValidarDocumentosCmd = {
   checadorId: string;
@@ -32,7 +33,25 @@ const avaliarDocumentos = (_payload: ValidarDocumentosCmd): boolean => {
   return Math.random() > 0.2;
 };
 
+const garantirTopicos = async () => {
+  // Kafka 3.7 só auto-cria tópico em produce; subscribe em tópico inexistente
+  // falha com UNKNOWN_TOPIC_OR_PARTITION. Criamos explicitamente via admin.
+  await admin.connect();
+  try {
+    await admin.createTopics({
+      waitForLeaders: true,
+      topics: [
+        { topic: TOPIC_IN,  numPartitions: 1, replicationFactor: 1 },
+        { topic: TOPIC_OUT, numPartitions: 1, replicationFactor: 1 },
+      ],
+    });
+  } finally {
+    await admin.disconnect();
+  }
+};
+
 const iniciarServico = async () => {
+  await garantirTopicos();
   await consumer.connect();
   await producer.connect();
   console.log(`[validador-docs] conectado ao Kafka em ${BROKER}`);

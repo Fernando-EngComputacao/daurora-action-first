@@ -235,7 +235,8 @@ Durante a demo, o **Kafka UI** (`http://localhost:8081`) mostra as mensagens tra
 
 - **Event Registry nativo em vez de bridge HTTP**: mantém a promessa do README ("o motor de orquestração publica uma mensagem no Kafka") sem intermediários. O preço é precisar fazer o deploy dos canais/eventos na UI do Flowable.
 - **Dois listeners Kafka (INTERNAL/EXTERNAL)**: `kafka:29092` para tráfego container-a-container (Flowable e Kafka UI) e `localhost:9092` para os microsserviços rodando no host. Sem isso, ou o Flowable não acha o broker pelo nome `localhost`, ou os microsserviços do host não falam com o container.
-- **Autocriação de tópicos ativada**: facilita a demonstração; em produção isso seria desligado e os tópicos criados com replicação explícita.
+- **Autocriação de tópicos ativada** no broker (`KAFKA_AUTO_CREATE_TOPICS_ENABLE=true`): facilita a demonstração; em produção isso seria desligado e os tópicos criados com replicação explícita.
+- **Tópicos criados explicitamente pelo validador**: apesar da flag acima, o Kafka 3.7 só auto-cria em *produce*; um `consumer.subscribe()` em tópico inexistente falha com `UNKNOWN_TOPIC_OR_PARTITION`. Por isso o `aurora-validador-docs` chama `admin.createTopics()` no startup (idempotente) antes de assinar.
 - **`eventKey` explícito no payload de retorno**: o canal inbound usa `channelEventKeyDetection.fixedValue`, mas deixar o `eventKey` no JSON mantém o evento self-describing e tolera mudanças futuras para `jsonPointer`/`jsonField`.
 - **Start do processo via REST em vez de Message Start Event**: é mais simples de testar e não exige um tópico adicional só para iniciar.
 
