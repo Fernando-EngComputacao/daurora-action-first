@@ -1,6 +1,12 @@
 services:
   flowable:
-    image: flowable/flowable-ui:latest
+    # Imagem oficial flowable/flowable-ui:latest é musl-based de 2022 e quebra
+    # em kernels recentes (passwd vazio + JDK musl com SIGBUS). Reembalamos
+    # o app sobre eclipse-temurin:11-jre (glibc) via Dockerfile.flowable.
+    build:
+      context: .
+      dockerfile: Dockerfile.flowable
+    image: aurora/flowable-ui:local
     container_name: aurora-flowable
     ports:
       - "8080:8080"
@@ -22,7 +28,9 @@ services:
       - LOGGING_LEVEL_ORG_SPRINGFRAMEWORK_KAFKA=INFO
 
   kafka:
-    image: apache/kafka:3.7.0
+    # apache/kafka:3.7.0 é musl-based e quebra em kernels novos. cp-kafka 7.7.x
+    # equivale ao Kafka 3.7.x, é glibc-based e usa as mesmas KAFKA_* vars.
+    image: confluentinc/cp-kafka:7.7.1
     container_name: aurora-kafka
     ports:
       - "9092:9092"   # acesso do host (ex.: microsserviços Node.js rodando fora do Docker)

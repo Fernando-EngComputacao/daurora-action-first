@@ -1,0 +1,14 @@
+# Reembala Flowable UI 6.8.0 sobre um Temurin glibc.
+# A imagem oficial flowable/flowable-ui:latest usa Temurin 11 musl de 2022
+# e gera SIGBUS em kernels recentes (Linux 6.x). Aqui copiamos os artefatos
+# e rodamos na imagem oficial eclipse-temurin:11-jre (glibc), mantida.
+FROM flowable/flowable-ui:latest AS source
+
+FROM eclipse-temurin:11-jre
+
+COPY --from=source /app /app
+COPY --from=source /flowable-entrypoint.sh /flowable-entrypoint.sh
+RUN chmod +x /flowable-entrypoint.sh
+
+EXPOSE 8080
+ENTRYPOINT ["/flowable-entrypoint.sh"]
