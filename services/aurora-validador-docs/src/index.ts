@@ -4,6 +4,16 @@ const BROKER = process.env.KAFKA_BROKER ?? 'localhost:9092';
 const TOPIC_IN = 'validar-documentos-cmd';
 const TOPIC_OUT = 'documentos-validados-evt';
 
+const SERVICE = 'validador-docs';
+const log = (event: string, fields: Record<string, unknown> = {}) => {
+  const parts = [`${new Date().toISOString()}`, `[${SERVICE}]`, `event=${event}`];
+  for (const [k, v] of Object.entries(fields)) {
+    if (v === undefined || v === null) continue;
+    parts.push(`${k}=${v}`);
+  }
+  console.log(parts.join(' '));
+};
+
 const kafka = new Kafka({
   clientId: 'aurora-validador-docs',
   brokers: [BROKER],
@@ -54,10 +64,9 @@ const iniciarServico = async () => {
   await garantirTopicos();
   await consumer.connect();
   await producer.connect();
-  console.log(`[validador-docs] conectado ao Kafka em ${BROKER}`);
+  log('startup', { broker: BROKER, topicIn: TOPIC_IN, topicOut: TOPIC_OUT });
 
   await consumer.subscribe({ topic: TOPIC_IN, fromBeginning: false });
-  console.log(`[validador-docs] aguardando mensagens em "${TOPIC_IN}"...`);
 
   await consumer.run({
     eachMessage: async ({ message }) => {
@@ -67,7 +76,7 @@ const iniciarServico = async () => {
       // o payload de negócio pode vir em raw ou em raw.eventPayload/raw.data dependendo da versão.
       const cmd: ValidarDocumentosCmd = raw.checadorId ? raw : (raw.eventPayload ?? raw.data ?? raw);
 
-      console.log(`[IN ] ${TOPIC_IN} checadorId=${cmd.checadorId}`);
+      log('in', { topic: TOPIC_IN, checadorId: cmd.checadorId });
 
       await new Promise((r) => setTimeout(r, 3000));
 
@@ -83,15 +92,13 @@ const iniciarServico = async () => {
         messages: [{ key: cmd.checadorId, value: JSON.stringify(evento) }],
       });
 
-      console.log(
-        `[OUT] ${TOPIC_OUT} checadorId=${cmd.checadorId} documentosValidos=${documentosValidos}`,
-      );
+      log('out', { topic: TOPIC_OUT, checadorId: cmd.checadorId, documentosValidos });
     },
   });
 };
 
 const desligar = async () => {
-  console.log('\n[validador-docs] encerrando...');
+  log('shutdown');
   await Promise.allSettled([consumer.disconnect(), producer.disconnect()]);
   process.exit(0);
 };
@@ -100,6 +107,6 @@ process.on('SIGINT', desligar);
 process.on('SIGTERM', desligar);
 
 iniciarServico().catch((err) => {
-  console.error('[validador-docs] erro fatal:', err);
+  log('erro_fatal', { motivo: JSON.stringify(err instanceof Error ? err.message : String(err)) });
   process.exit(1);
 });

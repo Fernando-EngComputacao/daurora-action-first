@@ -1,0 +1,17 @@
+{
+  "name": "aurora-curador-mock",
+  "version": "1.0.0",
+  "description": "Microsserviço que simula o curador humano: faz polling na REST do Flowable, reivindica e completa user tasks do grupo curadores automaticamente.",
+  "private": true,
+  "scripts": {
+    "dev": "ts-node src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.4.0"
+  }
+}

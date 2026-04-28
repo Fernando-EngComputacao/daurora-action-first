@@ -9,6 +9,16 @@ const PROCESS_KEY = process.env.PROCESS_KEY ?? 'credenciamentoChecador';
 
 const basicAuth = 'Basic ' + Buffer.from(`${FLOWABLE_USER}:${FLOWABLE_PASS}`).toString('base64');
 
+const SERVICE = 'credenciamento-api';
+const log = (event: string, fields: Record<string, unknown> = {}) => {
+  const parts = [`${new Date().toISOString()}`, `[${SERVICE}]`, `event=${event}`];
+  for (const [k, v] of Object.entries(fields)) {
+    if (v === undefined || v === null) continue;
+    parts.push(`${k}=${v}`);
+  }
+  console.log(parts.join(' '));
+};
+
 type CredenciamentoRequest = {
   nomeCompleto: string;
   documentos: string;
@@ -79,12 +89,12 @@ const servidor = http.createServer(async (req, res) => {
       }
 
       const { checadorId, processInstanceId } = await iniciarProcesso(payload);
-      console.log(`[credenciamento-api] processo iniciado checadorId=${checadorId} pid=${processInstanceId}`);
+      log('start', { checadorId, processInstanceId });
 
       res.writeHead(202, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ checadorId, processInstanceId }));
     } catch (err) {
-      console.error('[credenciamento-api] erro:', err);
+      log('erro', { motivo: JSON.stringify((err as Error).message) });
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ erro: (err as Error).message }));
     }
@@ -96,6 +106,5 @@ const servidor = http.createServer(async (req, res) => {
 });
 
 servidor.listen(PORT, () => {
-  console.log(`[credenciamento-api] escutando em http://localhost:${PORT}`);
-  console.log(`[credenciamento-api] Flowable alvo: ${FLOWABLE_URL} (processKey=${PROCESS_KEY})`);
+  log('startup', { porta: PORT, flowable: FLOWABLE_URL, processKey: PROCESS_KEY });
 });

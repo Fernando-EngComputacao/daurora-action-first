@@ -41,11 +41,13 @@ daurora-action-first/
 │   ├── healthcheck.sh
 │   ├── deploy-flowable.sh
 │   ├── disparar-credenciamento.sh
+│   ├── listar-instancias.sh
 │   └── completar-tarefa.sh
 │
 └── services/
     ├── aurora-credenciamento-api/  # Produtor HTTP — dispara o processo no Flowable
-    └── aurora-validador-docs/      # Consumidor reativo — valida documentos via Kafka
+    ├── aurora-validador-docs/      # Consumidor reativo — valida documentos via Kafka
+    └── aurora-curador-mock/        # Mock do curador humano — faz polling na REST do Flowable e completa user tasks
 ```
 
 Padrão para novos microsserviços: `services/<nome>/` contendo `package.json`, `tsconfig.json` e `src/index.ts`.
@@ -88,7 +90,7 @@ Detalhes e variáveis de ambiente suportadas: [`scripts/README.md`](./scripts/RE
 
 ### 3. Instalar dependências dos microsserviços
 
-Em **dois terminais diferentes**:
+Em **três terminais diferentes**:
 
 ```bash
 # Terminal A
@@ -102,17 +104,22 @@ cd services/aurora-credenciamento-api
 npm install
 ```
 
+```bash
+# Terminal C
+cd services/aurora-curador-mock
+npm install
+```
+
 ### 4. Rodar os microsserviços
 
 ```bash
-# Terminal A — validador reativo (fica escutando validar-documentos-cmd)
+# Terminal A — validador reativo (consome validar-documentos-cmd)
 npm run dev
 ```
 
-Deve imprimir:
+Deve imprimir uma linha de startup:
 ```
-[validador-docs] conectado ao Kafka em localhost:9092
-[validador-docs] aguardando mensagens em "validar-documentos-cmd"...
+2026-04-28T12:00:00.000Z [validador-docs] event=startup broker=localhost:9092 topicIn=validar-documentos-cmd topicOut=documentos-validados-evt
 ```
 
 ```bash
@@ -122,9 +129,20 @@ npm run dev
 
 Deve imprimir:
 ```
-[credenciamento-api] escutando em http://localhost:3000
-[credenciamento-api] Flowable alvo: http://localhost:8080/flowable-ui (processKey=credenciamentoChecador)
+2026-04-28T12:00:00.000Z [credenciamento-api] event=startup porta=3000 flowable=http://localhost:8080/flowable-ui processKey=credenciamentoChecador
 ```
+
+```bash
+# Terminal C — curador mock (faz polling na REST do Flowable a cada 5s)
+npm run dev
+```
+
+Deve imprimir:
+```
+2026-04-28T12:00:00.000Z [curador-mock] event=startup flowable=http://localhost:8080/flowable-ui grupo=curadores pollMs=5000 taxaAprovacao=0.7 latenciaMs=2000
+```
+
+> O curador-mock simula um humano do grupo `curadores`: a cada `CURADOR_POLL_MS` ele lista tasks abertas, reivindica cada uma com o assignee `curador-mock` e completa com `decisaoFinal=credenciar` (probabilidade `CURADOR_TAXA_APROVACAO`, default 0,7) ou `decisaoFinal=recusar`. Para completar manualmente via UI, basta não subir o curador-mock e usar o Task App ou `scripts/completar-tarefa.sh`.
 
 ### 5. Checkpoint: tudo no ar?
 
@@ -172,19 +190,40 @@ O script já imprime o `processInstanceId` em uma linha separada e sugere o coma
   docker logs -f aurora-flowable | grep -iE "kafka|error"
   ```
 
-### 8. Completar a tarefa humana (se documentos foram aprovados)
+### 8. Concluir o processo
 
-Quando `documentosValidos=true`, o Flowable cria a tarefa "Análise Curatorial". Conclua com:
+Quando `documentosValidos=true`, o Flowable cria a tarefa "Análise Curatorial" para o grupo `curadores`. Há três caminhos para finalizar:
+
+- **Automático (default da demo)**: o `aurora-curador-mock` rodando no terminal C reivindica e completa a task em poucos segundos. Não há nada a fazer — basta acompanhar os logs.
+- **Manual via script**: pare o curador-mock e use
+  ```bash
+  ./scripts/completar-tarefa.sh <processInstanceId> credenciar
+  # ou para reprovar na curadoria:
+  ./scripts/completar-tarefa.sh <processInstanceId> recusar
+  ```
+- **Manual via UI**: logue no **Flowable UI → Task App** (http://localhost:8080/flowable-ui) com `admin`/`test`, clique em *Tasks*, reivindique e complete a tarefa.
+
+Se você perdeu o `processInstanceId`, liste as instâncias:
 
 ```bash
-./scripts/completar-tarefa.sh <processInstanceId> credenciar
-# ou para reprovar na curadoria:
-./scripts/completar-tarefa.sh <processInstanceId> recusar
+./scripts/listar-instancias.sh
+# ou, para processos já finalizados:
+./scripts/listar-instancias.sh concluidas
 ```
 
-O script descobre a task aberta, faz o `POST` de conclusão com `decisaoFinal` e mostra o `endActivityId` final (esperado: `endCredenciado`). No BPMN atual, `credenciar`/`recusar` é apenas gravado como variável; o fluxo sempre converge para `endCredenciado` — veja [ARCHITECTURE §3](./ARCHITECTURE.md#3-modelo-de-processo-bpmn--rf08).
+No BPMN atual, `credenciar`/`recusar` é apenas gravado como variável; o fluxo sempre converge para `endCredenciado` — veja [ARCHITECTURE §3](./ARCHITECTURE.md#3-modelo-de-processo-bpmn--rf08).
 
-Alternativamente, logue no **Flowable UI → Task App** (http://localhost:8080/flowable-ui) com `admin`/`test`, clique em *Tasks*, reivindique e complete a tarefa pela interface gráfica.
+### 9. Demo end-to-end automática
+
+Para ver os 3 serviços rodando o fluxo inteiro **sem nenhuma intervenção humana**:
+
+```bash
+./scripts/demo-execucao-automatica.sh        # 5 instâncias, timeout 60s
+./scripts/demo-execucao-automatica.sh 10     # 10 instâncias
+./scripts/demo-execucao-automatica.sh 5 120  # 5 instâncias, timeout 120s
+```
+
+O script dispara N credenciamentos via `aurora-credenciamento-api`, faz polling no `history` até todos terminarem e imprime sumário com distribuição (`endCredenciado` × `endRejeitada`) e estatísticas de duração (p50/p95/max). Sai com código 0 se todos terminaram dentro do timeout. Distribuição esperada: ~80% (validador) × ~70% (curador) ≈ 56% `endCredenciado` + ~14% `endRejeitada` via curador (mas hoje o BPMN gravita ambos para `endCredenciado` — ver [ARCHITECTURE §3](./ARCHITECTURE.md#3-modelo-de-processo-bpmn--rf08)).
 
 ---
 
@@ -214,6 +253,12 @@ Alternativamente, logue no **Flowable UI → Task App** (http://localhost:8080/f
 | `aurora-credenciamento-api` | `FLOWABLE_USER` | `admin` |
 | `aurora-credenciamento-api` | `FLOWABLE_PASS` | `test` |
 | `aurora-credenciamento-api` | `PROCESS_KEY` | `credenciamentoChecador` |
+| `aurora-curador-mock` | `FLOWABLE_URL` / `FLOWABLE_USER` / `FLOWABLE_PASS` | mesmos defaults da API |
+| `aurora-curador-mock` | `CURADOR_GROUP` | `curadores` |
+| `aurora-curador-mock` | `CURADOR_ASSIGNEE` | `curador-mock` |
+| `aurora-curador-mock` | `CURADOR_POLL_MS` | `5000` |
+| `aurora-curador-mock` | `CURADOR_TAXA_APROVACAO` | `0.7` |
+| `aurora-curador-mock` | `CURADOR_LATENCIA_MS` | `2000` |
 
 ---
 

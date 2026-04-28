@@ -38,7 +38,9 @@ daurora-action-first/
 │   ├── healthcheck.sh
 │   ├── deploy-flowable.sh
 │   ├── disparar-credenciamento.sh
-│   └── completar-tarefa.sh
+│   ├── listar-instancias.sh
+│   ├── completar-tarefa.sh
+│   └── demo-execucao-automatica.sh
 │
 └── services/
     ├── aurora-credenciamento-api/  # Produtor: dispara o processo via REST do Flowable
@@ -46,7 +48,12 @@ daurora-action-first/
     │   ├── tsconfig.json
     │   └── src/index.ts
     │
-    └── aurora-validador-docs/      # Consumidor reativo: valida documentos via Kafka
+    ├── aurora-validador-docs/      # Consumidor reativo: valida documentos via Kafka
+    │   ├── package.json
+    │   ├── tsconfig.json
+    │   └── src/index.ts
+    │
+    └── aurora-curador-mock/        # Mock do curador humano: polling REST do Flowable + claim/complete
         ├── package.json
         ├── tsconfig.json
         └── src/index.ts
@@ -184,6 +191,13 @@ npm install
 npm run dev
 ```
 
+```bash
+# Terminal 3 — Curador mock (polling REST do Flowable, claim+complete user task)
+cd services/aurora-curador-mock
+npm install
+npm run dev
+```
+
 Variáveis de ambiente relevantes:
 
 | Serviço | Variável | Default |
@@ -193,6 +207,12 @@ Variáveis de ambiente relevantes:
 | `aurora-credenciamento-api` | `FLOWABLE_URL` | `http://localhost:8080/flowable-ui` |
 | `aurora-credenciamento-api` | `FLOWABLE_USER` / `FLOWABLE_PASS` | `admin` / `test` |
 | `aurora-credenciamento-api` | `PROCESS_KEY` | `credenciamentoChecador` |
+| `aurora-curador-mock` | `FLOWABLE_URL` / `FLOWABLE_USER` / `FLOWABLE_PASS` | mesmos defaults da API |
+| `aurora-curador-mock` | `CURADOR_GROUP` | `curadores` |
+| `aurora-curador-mock` | `CURADOR_ASSIGNEE` | `curador-mock` |
+| `aurora-curador-mock` | `CURADOR_POLL_MS` | `5000` |
+| `aurora-curador-mock` | `CURADOR_TAXA_APROVACAO` | `0.7` |
+| `aurora-curador-mock` | `CURADOR_LATENCIA_MS` | `2000` |
 
 ---
 
@@ -225,9 +245,24 @@ Variáveis de ambiente relevantes:
    - Se `documentosValidos == true` → cria uma **tarefa humana** `Análise Curatorial` (visível em *Task App*) para o grupo `curadores`.
    - Se `false` → encerra com estado "Rejeitada Automaticamente".
 
-5. **Completar a tarefa humana**: no *Task App* do Flowable UI, um usuário do grupo `curadores` reivindica e completa a tarefa, finalizando o processo como "Checador Credenciado".
+5. **Completar a tarefa humana**: o **`aurora-curador-mock`** faz polling em `GET /process-api/runtime/tasks?candidateGroup=curadores` (intervalo `CURADOR_POLL_MS`), reivindica cada task com assignee `curador-mock` e completa com `decisaoFinal=credenciar|recusar` (probabilidade controlada por `CURADOR_TAXA_APROVACAO`). O processo finaliza como "Checador Credenciado". Como alternativa manual, um operador humano pode reivindicar/completar pelo *Task App* do Flowable UI ou rodar `scripts/completar-tarefa.sh`.
+
+Para acionar o fluxo inteiro N vezes sem intervenção humana e medir a distribuição de resultados: `scripts/demo-execucao-automatica.sh [N] [timeout_s]`.
 
 Durante a demo, o **Kafka UI** (`http://localhost:8081`) mostra as mensagens trafegando em tempo real nos dois tópicos.
+
+### 6.1 Logs estruturados
+
+Os três serviços imprimem linhas no formato:
+
+```
+2026-04-28T15:33:01.123Z [validador-docs]    event=in       topic=validar-documentos-cmd       checadorId=abc-123
+2026-04-28T15:33:04.418Z [validador-docs]    event=out      topic=documentos-validados-evt     checadorId=abc-123 documentosValidos=true
+2026-04-28T15:33:09.812Z [curador-mock]      event=claim    taskId=tsk-9                       checadorId=abc-123
+2026-04-28T15:33:11.901Z [curador-mock]      event=complete taskId=tsk-9                       checadorId=abc-123 decisaoFinal=credenciar
+```
+
+Com isso, `grep checadorId=<id>` agregando os logs dos três serviços reconstrói a história cronológica de uma instância (produção do comando → consumo no validador → produção do resultado → claim/complete do curador).
 
 ---
 
@@ -265,3 +300,5 @@ Confirmadas durante a integração; todas já estão aplicadas neste repositóri
 - **Nova etapa humana**: adicionar `UserTask` no BPMN e usar `flowable:candidateGroups` apontando para grupos definidos no IDM App do Flowable.
 - **Persistência real do Flowable**: hoje o container usa H2 in-memory (dados somem ao reiniciar). Para demo estendida, anexar um banco externo (Postgres) via `SPRING_DATASOURCE_*` + volume para o container do Flowable.
 - **Automatizar o redeploy no boot**: o script `scripts/deploy-flowable.sh` já existe; falta encadeá-lo a `docker compose up` (healthcheck do container + hook ou `Makefile`) para eliminar o passo manual.
+- **Gateway pós-`analiseCuratorial`**: hoje o `flowUserToEnd` (`bpmn/credenciamento-checador.bpmn20.xml:76`) liga a user task direto em `endCredenciado`, ignorando `decisaoFinal=recusar`. Adicionar gateway que distinga `credenciar` × `recusar` e introduzir `endReprovadoCurador` para o BPMN refletir o resultado real. O `aurora-curador-mock` já envia `recusar` na proporção `1 - CURADOR_TAXA_APROVACAO` esperando esta evolução.
+- **Listener Flowable → Kafka para user tasks**: alternativa ao polling REST do `aurora-curador-mock`. Configurar um event listener no Flowable que publique a criação de cada user task num tópico Kafka deixaria o curador-mock reativo igual ao validador, eliminando QPS de polling.
