@@ -20,7 +20,8 @@ flowchart LR
         D[Solicita validação<br/>dos documentos]:::passo
         E[Aguarda o<br/>resultado]:::passo
         F{Documentos<br/>válidos?}:::decisao
-        G[Cria tarefa<br/>para os curadores]:::passo
+        G[Solicita decisão<br/>da curadoria]:::passo
+        M[Aguarda a<br/>decisão]:::passo
         H((Checador<br/>credenciado)):::inicio
         I((Rejeitado<br/>automaticamente)):::inicio
     end
@@ -30,10 +31,9 @@ flowchart LR
         J[Lê os documentos<br/>e decide se passam]:::passo
     end
 
-    subgraph L4["Curador (humano)"]
+    subgraph L4["Curador automático (microsserviço)"]
         direction LR
-        K[Reivindica<br/>a tarefa]:::passo
-        L[Aprova ou<br/>recusa]:::passo
+        N[Decide credenciar<br/>ou recusar]:::passo
     end
 
     A --> B --> C --> D
@@ -41,7 +41,10 @@ flowchart LR
     J -. "Kafka:<br/>documentos-validados-evt" .-> E
     E --> F
     F -- Não  --> I
-    F -- Sim  --> G --> K --> L --> H
+    F -- Sim  --> G
+    G -. "Kafka:<br/>solicitar-curadoria-cmd" .-> N
+    N -. "Kafka:<br/>decisao-curadoria-evt" .-> M
+    M --> H
 ```
 
 ## Como ler o diagrama
@@ -51,6 +54,7 @@ flowchart LR
 3. O **Validador automático** ouve esse tópico, avalia os documentos e **publica o resultado em outro tópico Kafka**.
 4. O Flowable recebe o resultado e decide:
    - **Não** → encerra rejeitando.
-   - **Sim** → cria uma tarefa humana para o **Curador**, que reivindica e aprova/recusa, fechando o processo.
+   - **Sim** → publica um novo comando no Kafka pedindo a decisão da curadoria.
+5. O **Curador automático** ouve esse tópico, decide `credenciar`/`recusar` e **publica a decisão em outro tópico Kafka**. O Flowable correlaciona pelo `checadorId` e finaliza o processo.
 
-> O Flowable é quem mantém o estado do processo. O Kafka é só o "correio" entre o Flowable e o serviço de validação. O curador conversa com o Flowable diretamente (sem Kafka).
+> O Flowable é quem mantém o estado do processo. O Kafka é o "correio" entre o Flowable e os microsserviços de validação e curadoria — nenhum dos dois conhece a URL do Flowable, ambos conhecem só seus tópicos. Atualmente o BPMN sempre converge para `endCredenciado` mesmo quando o curador `recusa`; a `decisaoFinal` fica gravada como variável do processo. Para diferenciar `credenciar` × `recusar` no `endActivityId`, basta adicionar um gateway depois do receive da curadoria.

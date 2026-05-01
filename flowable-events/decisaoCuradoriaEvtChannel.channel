@@ -1,0 +1,13 @@
+{
+  "key": "decisaoCuradoriaEvtChannel",
+  "category": "channel",
+  "name": "Canal Inbound - decisao-curadoria-evt",
+  "channelType": "inbound",
+  "type": "kafka",
+  "topics": ["decisao-curadoria-evt"],
+  "groupId": "flowable-event-registry",
+  "deserializerType": "json",
+  "channelEventKeyDetection": {
+    "fixedValue": "decisaoCuradoriaEvt"
+  }
+}

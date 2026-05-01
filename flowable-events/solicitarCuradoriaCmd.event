@@ -1,0 +1,12 @@
+{
+  "key": "solicitarCuradoriaCmd",
+  "name": "Solicitar Curadoria (comando para microsserviço curador)",
+  "correlationParameters": [
+    { "name": "checadorId", "type": "string" }
+  ],
+  "payload": [
+    { "name": "checadorId",   "type": "string" },
+    { "name": "nomeCompleto", "type": "string" },
+    { "name": "documentos",   "type": "string" }
+  ]
+}

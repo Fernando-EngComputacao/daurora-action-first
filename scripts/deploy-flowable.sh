@@ -29,8 +29,12 @@ echo "==> Flowable: $FLOWABLE_URL (user: $FLOWABLE_USER)"
 for f in \
   "$REPO_ROOT/flowable-events/validarDocumentosCmd.event" \
   "$REPO_ROOT/flowable-events/documentosValidadosEvt.event" \
+  "$REPO_ROOT/flowable-events/solicitarCuradoriaCmd.event" \
+  "$REPO_ROOT/flowable-events/decisaoCuradoriaEvt.event" \
   "$REPO_ROOT/flowable-events/validarDocumentosCmdChannel.channel" \
-  "$REPO_ROOT/flowable-events/documentosValidadosEvtChannel.channel"; do
+  "$REPO_ROOT/flowable-events/documentosValidadosEvtChannel.channel" \
+  "$REPO_ROOT/flowable-events/solicitarCuradoriaCmdChannel.channel" \
+  "$REPO_ROOT/flowable-events/decisaoCuradoriaEvtChannel.channel"; do
   name="$(basename "$f")"
   echo "--> deploy event-registry: $name"
   curl -sS "${AUTH[@]}" -F "file=@$f" "$EVENT_ENDPOINT" | head -c 200

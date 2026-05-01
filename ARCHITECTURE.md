@@ -10,8 +10,8 @@ A plataforma Aurora combina dois paradigmas de integração, ambos presentes nes
 
 | Paradigma | Onde vive | Responsabilidade |
 |---|---|---|
-| **Orquestração (BPMN 2.0)** | `bpmn/credenciamento-checador.bpmn20.xml` executado pelo Flowable | Mantém o estado do processo de credenciamento e decide quando acionar os microsserviços e os humanos. |
-| **Coreografia reativa** | Microsserviços Node.js conectados ao Kafka | Executam etapas autônomas (ex.: validação de documentos) sem conhecer o processo como um todo — apenas consomem e publicam eventos. |
+| **Orquestração (BPMN 2.0)** | `bpmn/credenciamento-checador.bpmn20.xml` executado pelo Flowable | Mantém o estado do processo de credenciamento e decide quando acionar cada microsserviço. |
+| **Coreografia reativa** | Microsserviços Node.js conectados ao Kafka | Executam etapas autônomas (validação de documentos, decisão de curadoria) sem conhecer o processo como um todo — apenas consomem e publicam eventos. |
 
 A "cola" entre os dois mundos é o **Flowable Event Registry**, que traduz as tarefas de envio/recepção de evento do BPMN em mensagens Kafka reais, conforme os canais definidos em `flowable-events/`. Na XML do BPMN essas tarefas aparecem como `<serviceTask flowable:type="send-event">` (comando) e `<receiveTask>` com extension elements (aguardar resultado) — a imagem do Flowable UI 6.8 não aceita os elementos padrão `<sendEventTask>`/`<receiveEventTask>` do BPMN.
 
@@ -29,10 +29,14 @@ daurora-action-first/
 │   └── credenciamento-checador.bpmn20.xml   # Modelo BPMN2 do processo RF08
 │
 ├── flowable-events/                # Contratos do Event Registry do Flowable
-│   ├── validarDocumentosCmd.event           # Evento de saída (comando)
-│   ├── validarDocumentosCmdChannel.channel  # Canal Kafka outbound
-│   ├── documentosValidadosEvt.event         # Evento de entrada (resultado)
-│   └── documentosValidadosEvtChannel.channel # Canal Kafka inbound
+│   ├── validarDocumentosCmd.event              # Comando: pedir validação dos documentos
+│   ├── validarDocumentosCmdChannel.channel     # Canal Kafka outbound
+│   ├── documentosValidadosEvt.event            # Evento: resultado da validação
+│   ├── documentosValidadosEvtChannel.channel   # Canal Kafka inbound
+│   ├── solicitarCuradoriaCmd.event             # Comando: pedir decisão da curadoria
+│   ├── solicitarCuradoriaCmdChannel.channel    # Canal Kafka outbound
+│   ├── decisaoCuradoriaEvt.event               # Evento: decisão final da curadoria
+│   └── decisaoCuradoriaEvtChannel.channel      # Canal Kafka inbound
 │
 ├── scripts/                        # Automação dos comandos do README
 │   ├── healthcheck.sh
@@ -53,7 +57,7 @@ daurora-action-first/
     │   ├── tsconfig.json
     │   └── src/index.ts
     │
-    └── aurora-curador-mock/        # Mock do curador humano: polling REST do Flowable + claim/complete
+    └── aurora-curador-mock/        # Curador automatizado: consome solicitar-curadoria-cmd e publica decisao-curadoria-evt
         ├── package.json
         ├── tsconfig.json
         └── src/index.ts
@@ -81,18 +85,28 @@ daurora-action-first/
                                                               └─────────────┬───────────┬───┘
                                                             true            │           │  false
                                                                             ▼           ▼
-                                                          ┌────────────────────┐  ┌──────────────────┐
-                                                          │ UserTask:          │  │ End: Rejeitada   │
-                                                          │ Análise Curatorial │  │ Automaticamente  │
-                                                          │ (grupo curadores)  │  └──────────────────┘
-                                                          └────────┬───────────┘
-                                                                   ▼
-                                                          ┌──────────────────────┐
-                                                          │ End: Credenciado     │
-                                                          └──────────────────────┘
+                                            ┌─────────────────────────┐    ┌──────────────────┐
+                                            │ ServiceTask             │    │ End: Rejeitada   │
+                                            │ (send-event)            │    │ Automaticamente  │
+                                            │ "Solicitar Curadoria"   │    └──────────────────┘
+                                            │  → solicitarCuradoria…  │
+                                            │  (Kafka outbound)       │
+                                            └────────────┬────────────┘
+                                                         ▼
+                                            ┌─────────────────────────┐
+                                            │ ReceiveTask             │
+                                            │ "Aguardar Decisão"      │
+                                            │  ← decisaoCuradoriaEvt  │
+                                            │  (Kafka inbound,        │
+                                            │   correlação checadorId)│
+                                            └────────────┬────────────┘
+                                                         ▼
+                                            ┌──────────────────────┐
+                                            │ End: Credenciado     │
+                                            └──────────────────────┘
 ```
 
-**Variáveis de processo**: `checadorId` (string), `nomeCompleto` (string), `documentos` (string), `documentosValidos` (boolean, preenchida pelo evento de retorno).
+**Variáveis de processo**: `checadorId` (string), `nomeCompleto` (string), `documentos` (string), `documentosValidos` (boolean, preenchida pelo evento `documentosValidadosEvt`), `decisaoFinal` (string, preenchida pelo evento `decisaoCuradoriaEvt` — `"credenciar"` ou `"recusar"`).
 
 ---
 
@@ -120,6 +134,28 @@ daurora-action-first/
 - **Desserializador**: JSON
 - **Detecção do tipo de evento**: chave fixa `documentosValidadosEvt` (`channelEventKeyDetection.fixedValue`) — o produtor (microsserviço validador) deve enviar um campo `eventKey: "documentosValidadosEvt"` no payload.
 
+### 4.3 `solicitarCuradoriaCmd` — outbound (Flowable → Kafka)
+
+| Campo | Tipo | Descrição |
+|---|---|---|
+| `checadorId` | string | ID único do checador (também usado como correlação). |
+| `nomeCompleto` | string | Nome completo do candidato. |
+| `documentos` | string | URL(s) ou referência aos documentos anexos. |
+
+- **Tópico Kafka**: `solicitar-curadoria-cmd`
+- **Serializador**: JSON
+
+### 4.4 `decisaoCuradoriaEvt` — inbound (Kafka → Flowable)
+
+| Campo | Tipo | Descrição |
+|---|---|---|
+| `checadorId` | string | Retornado do comando; usado para correlacionar a instância. |
+| `decisaoFinal` | string | `"credenciar"` ou `"recusar"`. |
+
+- **Tópico Kafka**: `decisao-curadoria-evt`
+- **Desserializador**: JSON
+- **Detecção do tipo de evento**: chave fixa `decisaoCuradoriaEvt` (`channelEventKeyDetection.fixedValue`) — o produtor (microsserviço curador) deve enviar um campo `eventKey: "decisaoCuradoriaEvt"` no payload.
+
 ---
 
 ## 5. Como Subir o Ambiente
@@ -139,7 +175,7 @@ Serviços disponíveis:
 | Kafka Broker (host) | `localhost:9092` | — |
 | Kafka Broker (containers) | `kafka:29092` | — |
 
-> Conferir no Kafka UI se os tópicos `validar-documentos-cmd` e `documentos-validados-evt` aparecem automaticamente (autocriação está ativada) ou serão criados na primeira publicação.
+> Conferir no Kafka UI se os quatro tópicos (`validar-documentos-cmd`, `documentos-validados-evt`, `solicitar-curadoria-cmd`, `decisao-curadoria-evt`) aparecem automaticamente (autocriação está ativada) ou serão criados na primeira publicação. O validador e o curador também chamam `admin.createTopics()` no startup, então os seus tópicos sobem mesmo antes da primeira mensagem.
 
 ### 5.2 Deploy dos artefatos no Flowable
 
@@ -151,9 +187,9 @@ O caminho automatizado é o script da seção de automação do repositório:
 ./scripts/deploy-flowable.sh
 ```
 
-Ele publica os 4 arquivos de `flowable-events/` (um `POST` por arquivo — ver §8 pegadinha #7), depois o BPMN, e valida que `process-definitions?key=credenciamentoChecador` retorna `total>=1`. Aceita `FLOWABLE_URL`/`FLOWABLE_USER`/`FLOWABLE_PASS` como variáveis de ambiente para apontar para outro host/credencial. Ver [`scripts/README.md`](./scripts/README.md) para o contrato completo.
+Ele publica os 8 arquivos de `flowable-events/` (um `POST` por arquivo — ver §8 pegadinha #7), depois o BPMN, e valida que `process-definitions?key=credenciamentoChecador` retorna `total>=1`. Aceita `FLOWABLE_URL`/`FLOWABLE_USER`/`FLOWABLE_PASS` como variáveis de ambiente para apontar para outro host/credencial. Ver [`scripts/README.md`](./scripts/README.md) para o contrato completo.
 
-Alternativa pela UI: acessar *Modeler App*, importar cada arquivo individualmente (menus *Channels*, *Events*, *Processes*) e publicar um *App Definition* que agrupe os 4 artefatos.
+Alternativa pela UI: acessar *Modeler App*, importar cada arquivo individualmente (menus *Channels*, *Events*, *Processes*) e publicar um *App Definition* que agrupe os artefatos.
 
 Alternativa manual via REST (útil para debug, equivale ao que o script faz):
 
@@ -163,8 +199,12 @@ AUTH='-u admin:test'
 
 for f in flowable-events/validarDocumentosCmd.event \
          flowable-events/documentosValidadosEvt.event \
+         flowable-events/solicitarCuradoriaCmd.event \
+         flowable-events/decisaoCuradoriaEvt.event \
          flowable-events/validarDocumentosCmdChannel.channel \
-         flowable-events/documentosValidadosEvtChannel.channel; do
+         flowable-events/documentosValidadosEvtChannel.channel \
+         flowable-events/solicitarCuradoriaCmdChannel.channel \
+         flowable-events/decisaoCuradoriaEvtChannel.channel; do
   curl -s $AUTH -F "file=@$f" \
     "$BASE/event-registry-api/event-registry-repository/deployments" | head -c 120; echo
 done
@@ -192,7 +232,7 @@ npm run dev
 ```
 
 ```bash
-# Terminal 3 — Curador mock (polling REST do Flowable, claim+complete user task)
+# Terminal 3 — Curador automatizado (consome Kafka, decide e publica de volta)
 cd services/aurora-curador-mock
 npm install
 npm run dev
@@ -207,10 +247,7 @@ Variáveis de ambiente relevantes:
 | `aurora-credenciamento-api` | `FLOWABLE_URL` | `http://localhost:8080/flowable-ui` |
 | `aurora-credenciamento-api` | `FLOWABLE_USER` / `FLOWABLE_PASS` | `admin` / `test` |
 | `aurora-credenciamento-api` | `PROCESS_KEY` | `credenciamentoChecador` |
-| `aurora-curador-mock` | `FLOWABLE_URL` / `FLOWABLE_USER` / `FLOWABLE_PASS` | mesmos defaults da API |
-| `aurora-curador-mock` | `CURADOR_GROUP` | `curadores` |
-| `aurora-curador-mock` | `CURADOR_ASSIGNEE` | `curador-mock` |
-| `aurora-curador-mock` | `CURADOR_POLL_MS` | `5000` |
+| `aurora-curador-mock` | `KAFKA_BROKER` | `localhost:9092` |
 | `aurora-curador-mock` | `CURADOR_TAXA_APROVACAO` | `0.7` |
 | `aurora-curador-mock` | `CURADOR_LATENCIA_MS` | `2000` |
 
@@ -242,14 +279,14 @@ Variáveis de ambiente relevantes:
    - publica o evento em `documentos-validados-evt` com `eventKey: "documentosValidadosEvt"` e o mesmo `checadorId`.
 
 4. **O Flowable** correlaciona pelo `checadorId`, destrava o `receiveTask` e avalia o gateway:
-   - Se `documentosValidos == true` → cria uma **tarefa humana** `Análise Curatorial` (visível em *Task App*) para o grupo `curadores`.
+   - Se `documentosValidos == true` → executa o `serviceTask` `enviarSolicitarCuradoria`, publicando em `solicitar-curadoria-cmd`, e fica bloqueado no novo `receiveTask` `aguardarDecisaoCurador`.
    - Se `false` → encerra com estado "Rejeitada Automaticamente".
 
-5. **Completar a tarefa humana**: o **`aurora-curador-mock`** faz polling em `GET /process-api/runtime/tasks?candidateGroup=curadores` (intervalo `CURADOR_POLL_MS`), reivindica cada task com assignee `curador-mock` e completa com `decisaoFinal=credenciar|recusar` (probabilidade controlada por `CURADOR_TAXA_APROVACAO`). O processo finaliza como "Checador Credenciado". Como alternativa manual, um operador humano pode reivindicar/completar pelo *Task App* do Flowable UI ou rodar `scripts/completar-tarefa.sh`.
+5. **O `aurora-curador-mock`** consome `solicitar-curadoria-cmd`, simula `CURADOR_LATENCIA_MS` de processamento e publica em `decisao-curadoria-evt` com `eventKey: "decisaoCuradoriaEvt"`, `checadorId` e `decisaoFinal=credenciar|recusar` (probabilidade controlada por `CURADOR_TAXA_APROVACAO`). O Flowable correlaciona pelo `checadorId`, grava `decisaoFinal` na variável do processo e finaliza em `endCredenciado`. Hoje o BPMN não diferencia `credenciar` de `recusar` no `endActivityId`; ver §9.
 
 Para acionar o fluxo inteiro N vezes sem intervenção humana e medir a distribuição de resultados: `scripts/demo-execucao-automatica.sh [N] [timeout_s]`.
 
-Durante a demo, o **Kafka UI** (`http://localhost:8081`) mostra as mensagens trafegando em tempo real nos dois tópicos.
+Durante a demo, o **Kafka UI** (`http://localhost:8081`) mostra as mensagens trafegando em tempo real nos quatro tópicos.
 
 ### 6.1 Logs estruturados
 
@@ -258,11 +295,11 @@ Os três serviços imprimem linhas no formato:
 ```
 2026-04-28T15:33:01.123Z [validador-docs]    event=in       topic=validar-documentos-cmd       checadorId=abc-123
 2026-04-28T15:33:04.418Z [validador-docs]    event=out      topic=documentos-validados-evt     checadorId=abc-123 documentosValidos=true
-2026-04-28T15:33:09.812Z [curador-mock]      event=claim    taskId=tsk-9                       checadorId=abc-123
-2026-04-28T15:33:11.901Z [curador-mock]      event=complete taskId=tsk-9                       checadorId=abc-123 decisaoFinal=credenciar
+2026-04-28T15:33:09.812Z [curador-mock]      event=in       topic=solicitar-curadoria-cmd      checadorId=abc-123
+2026-04-28T15:33:11.901Z [curador-mock]      event=out      topic=decisao-curadoria-evt        checadorId=abc-123 decisaoFinal=credenciar
 ```
 
-Com isso, `grep checadorId=<id>` agregando os logs dos três serviços reconstrói a história cronológica de uma instância (produção do comando → consumo no validador → produção do resultado → claim/complete do curador).
+Com isso, `grep checadorId=<id>` agregando os logs dos três serviços reconstrói a história cronológica de uma instância (produção do comando de validação → consumo no validador → produção do resultado → consumo no curador → produção da decisão).
 
 ---
 
@@ -297,8 +334,7 @@ Confirmadas durante a integração; todas já estão aplicadas neste repositóri
 ## 9. Como Evoluir
 
 - **Novo microsserviço reativo**: criar `services/<nome>/` no mesmo padrão; declarar o canal/evento em `flowable-events/` e referenciar no BPMN via `<serviceTask flowable:type="send-event">` ou `<receiveTask>` com `flowable:eventType` + `flowable:channelKey`.
-- **Nova etapa humana**: adicionar `UserTask` no BPMN e usar `flowable:candidateGroups` apontando para grupos definidos no IDM App do Flowable.
+- **Reintroduzir etapa humana**: o BPMN é hoje 100% reativo. Para reintroduzir um curador humano (ou misturar humano + bot), adicionar um `userTask` com `flowable:candidateGroups="curadores"` em paralelo ou substituindo o par `serviceTask` + `receiveTask` da curadoria, e usar o IDM App do Flowable para gerenciar os usuários do grupo.
 - **Persistência real do Flowable**: hoje o container usa H2 in-memory (dados somem ao reiniciar). Para demo estendida, anexar um banco externo (Postgres) via `SPRING_DATASOURCE_*` + volume para o container do Flowable.
 - **Automatizar o redeploy no boot**: o script `scripts/deploy-flowable.sh` já existe; falta encadeá-lo a `docker compose up` (healthcheck do container + hook ou `Makefile`) para eliminar o passo manual.
-- **Gateway pós-`analiseCuratorial`**: hoje o `flowUserToEnd` (`bpmn/credenciamento-checador.bpmn20.xml:76`) liga a user task direto em `endCredenciado`, ignorando `decisaoFinal=recusar`. Adicionar gateway que distinga `credenciar` × `recusar` e introduzir `endReprovadoCurador` para o BPMN refletir o resultado real. O `aurora-curador-mock` já envia `recusar` na proporção `1 - CURADOR_TAXA_APROVACAO` esperando esta evolução.
-- **Listener Flowable → Kafka para user tasks**: alternativa ao polling REST do `aurora-curador-mock`. Configurar um event listener no Flowable que publique a criação de cada user task num tópico Kafka deixaria o curador-mock reativo igual ao validador, eliminando QPS de polling.
+- **Gateway pós-curadoria**: hoje o `flowReceiveCuradoriaToEnd` liga o `aguardarDecisaoCurador` direto em `endCredenciado`, ignorando `decisaoFinal=recusar`. Adicionar gateway que distinga `credenciar` × `recusar` e introduzir `endReprovadoCurador` para o BPMN refletir o resultado real. O `aurora-curador-mock` já envia `recusar` na proporção `1 - CURADOR_TAXA_APROVACAO` esperando esta evolução.

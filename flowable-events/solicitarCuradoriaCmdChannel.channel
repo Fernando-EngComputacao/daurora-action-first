@@ -1,0 +1,9 @@
+{
+  "key": "solicitarCuradoriaCmdChannel",
+  "category": "channel",
+  "name": "Canal Outbound - solicitar-curadoria-cmd",
+  "channelType": "outbound",
+  "type": "kafka",
+  "topic": "solicitar-curadoria-cmd",
+  "serializerType": "json"
+}

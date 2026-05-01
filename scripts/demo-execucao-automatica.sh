@@ -1,11 +1,18 @@
 #!/usr/bin/env bash
 # Roteiro reproduzível da demo "execução automática": dispara N
 # credenciamentos via aurora-credenciamento-api, espera todos terminarem (com
-# timeout) e imprime sumário com distribuição esperada (~80% docs válidos x
-# ~70% credenciar = ~56% endCredenciado).
+# timeout) e imprime sumário com distribuição esperada.
+#
+# Distribuição esperada (BPMN atual, sem gateway pós-curadoria):
+#   ~80% endCredenciado  (passou no validador automático; a decisaoFinal do
+#                         curador é gravada como variável mas não influencia
+#                         o fim do processo)
+#   ~20% endRejeitada    (reprovado pelo validador automático)
 #
 # Pré-requisitos: docker compose up + deploy-flowable.sh + os 3 microsserviços
 # rodando (aurora-credenciamento-api, aurora-validador-docs, aurora-curador-mock).
+# Os dois últimos são reativos via Kafka — o tempo total por instância é
+# ~validador 3s + curador 2s ≈ 5s.
 #
 # Uso:
 #   scripts/demo-execucao-automatica.sh            # N=5

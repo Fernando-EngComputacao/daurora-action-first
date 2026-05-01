@@ -49,7 +49,7 @@
 
     <exclusiveGateway id="gatewayDocsValidos" name="Documentos Válidos?"/>
 
-    <sequenceFlow id="flowAprovada" sourceRef="gatewayDocsValidos" targetRef="analiseCuratorial">
+    <sequenceFlow id="flowAprovada" sourceRef="gatewayDocsValidos" targetRef="enviarSolicitarCuradoria">
       <conditionExpression xsi:type="tFormalExpression">${documentosValidos == true}</conditionExpression>
     </sequenceFlow>
 
@@ -57,23 +57,31 @@
       <conditionExpression xsi:type="tFormalExpression">${documentosValidos == false}</conditionExpression>
     </sequenceFlow>
 
-    <userTask id="analiseCuratorial"
-              name="Análise Curatorial"
-              flowable:candidateGroups="curadores">
-      <documentation>
-        Revisar manualmente a documentação do candidato a checador e aprovar ou reprovar o credenciamento.
-      </documentation>
+    <serviceTask id="enviarSolicitarCuradoria"
+                 name="Solicitar Análise Curatorial"
+                 flowable:type="send-event">
       <extensionElements>
-        <flowable:formProperty id="checadorId" name="ID do Checador" type="string" writable="false"/>
-        <flowable:formProperty id="nomeCompleto" name="Nome Completo" type="string" writable="false"/>
-        <flowable:formProperty id="decisaoFinal" name="Decisão Final" type="enum" required="true">
-          <flowable:value id="credenciar" name="Credenciar"/>
-          <flowable:value id="recusar" name="Recusar"/>
-        </flowable:formProperty>
+        <flowable:eventType>solicitarCuradoriaCmd</flowable:eventType>
+        <flowable:channelKey>solicitarCuradoriaCmdChannel</flowable:channelKey>
+        <flowable:eventInParameter sourceExpression="${checadorId}" target="checadorId"/>
+        <flowable:eventInParameter sourceExpression="${nomeCompleto}" target="nomeCompleto"/>
+        <flowable:eventInParameter sourceExpression="${documentos}" target="documentos"/>
       </extensionElements>
-    </userTask>
+    </serviceTask>
 
-    <sequenceFlow id="flowUserToEnd" sourceRef="analiseCuratorial" targetRef="endCredenciado"/>
+    <sequenceFlow id="flowSendCuradoriaToReceive" sourceRef="enviarSolicitarCuradoria" targetRef="aguardarDecisaoCurador"/>
+
+    <receiveTask id="aguardarDecisaoCurador"
+                 name="Aguardar Decisão da Curadoria">
+      <extensionElements>
+        <flowable:eventType>decisaoCuradoriaEvt</flowable:eventType>
+        <flowable:channelKey>decisaoCuradoriaEvtChannel</flowable:channelKey>
+        <flowable:eventCorrelationParameter name="checadorId" value="${checadorId}"/>
+        <flowable:eventOutParameter source="decisaoFinal" target="decisaoFinal"/>
+      </extensionElements>
+    </receiveTask>
+
+    <sequenceFlow id="flowReceiveCuradoriaToEnd" sourceRef="aguardarDecisaoCurador" targetRef="endCredenciado"/>
 
     <endEvent id="endCredenciado" name="Checador Credenciado"/>
     <endEvent id="endRejeitada" name="Solicitação Rejeitada Automaticamente"/>
@@ -94,11 +102,14 @@
       <bpmndi:BPMNShape id="shape_gateway" bpmnElement="gatewayDocsValidos" isMarkerVisible="true">
         <dc:Bounds x="560" y="175" width="50" height="50"/>
       </bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="shape_usertask" bpmnElement="analiseCuratorial">
+      <bpmndi:BPMNShape id="shape_send_curadoria" bpmnElement="enviarSolicitarCuradoria">
         <dc:Bounds x="680" y="80" width="120" height="80"/>
       </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="shape_receive_curadoria" bpmnElement="aguardarDecisaoCurador">
+        <dc:Bounds x="840" y="80" width="120" height="80"/>
+      </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="shape_end_ok" bpmnElement="endCredenciado">
-        <dc:Bounds x="860" y="102" width="36" height="36"/>
+        <dc:Bounds x="1000" y="102" width="36" height="36"/>
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="shape_end_nok" bpmnElement="endRejeitada">
         <dc:Bounds x="860" y="258" width="36" height="36"/>
@@ -112,14 +123,17 @@
       <bpmndi:BPMNEdge id="edge_receive_gateway" bpmnElement="flowReceiveToGateway">
         <di:waypoint x="500" y="198"/><di:waypoint x="560" y="200"/>
       </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="edge_gateway_user" bpmnElement="flowAprovada">
+      <bpmndi:BPMNEdge id="edge_gateway_send_curadoria" bpmnElement="flowAprovada">
         <di:waypoint x="585" y="175"/><di:waypoint x="585" y="120"/><di:waypoint x="680" y="120"/>
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="edge_gateway_end_nok" bpmnElement="flowRejeitada">
         <di:waypoint x="585" y="225"/><di:waypoint x="585" y="276"/><di:waypoint x="860" y="276"/>
       </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="edge_user_end_ok" bpmnElement="flowUserToEnd">
-        <di:waypoint x="800" y="120"/><di:waypoint x="860" y="120"/>
+      <bpmndi:BPMNEdge id="edge_send_receive_curadoria" bpmnElement="flowSendCuradoriaToReceive">
+        <di:waypoint x="800" y="120"/><di:waypoint x="840" y="120"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="edge_receive_curadoria_end" bpmnElement="flowReceiveCuradoriaToEnd">
+        <di:waypoint x="960" y="120"/><di:waypoint x="1000" y="120"/>
       </bpmndi:BPMNEdge>
     </bpmndi:BPMNPlane>
   </bpmndi:BPMNDiagram>

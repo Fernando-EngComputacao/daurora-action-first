@@ -1,0 +1,11 @@
+{
+  "key": "decisaoCuradoriaEvt",
+  "name": "Decisão da Curadoria (evento de retorno do curador)",
+  "correlationParameters": [
+    { "name": "checadorId", "type": "string" }
+  ],
+  "payload": [
+    { "name": "checadorId",   "type": "string" },
+    { "name": "decisaoFinal", "type": "string" }
+  ]
+}

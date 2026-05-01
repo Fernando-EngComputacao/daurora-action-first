@@ -1,17 +1,13 @@
-import { setTimeout as sleep } from 'node:timers/promises';
+import { Kafka, logLevel } from 'kafkajs';
 
-const FLOWABLE_URL  = process.env.FLOWABLE_URL  ?? 'http://localhost:8080/flowable-ui';
-const FLOWABLE_USER = process.env.FLOWABLE_USER ?? 'admin';
-const FLOWABLE_PASS = process.env.FLOWABLE_PASS ?? 'test';
-const CURADOR_GROUP           = process.env.CURADOR_GROUP           ?? 'curadores';
-const CURADOR_ASSIGNEE        = process.env.CURADOR_ASSIGNEE        ?? 'curador-mock';
-const CURADOR_POLL_MS         = Number(process.env.CURADOR_POLL_MS         ?? 5000);
-const CURADOR_TAXA_APROVACAO  = Number(process.env.CURADOR_TAXA_APROVACAO  ?? 0.7);
-const CURADOR_LATENCIA_MS     = Number(process.env.CURADOR_LATENCIA_MS     ?? 2000);
+const BROKER = process.env.KAFKA_BROKER ?? 'localhost:9092';
+const TOPIC_IN = 'solicitar-curadoria-cmd';
+const TOPIC_OUT = 'decisao-curadoria-evt';
+
+const CURADOR_TAXA_APROVACAO = Number(process.env.CURADOR_TAXA_APROVACAO ?? 0.7);
+const CURADOR_LATENCIA_MS    = Number(process.env.CURADOR_LATENCIA_MS    ?? 2000);
 
 const SERVICE = 'curador-mock';
-const basicAuth = 'Basic ' + Buffer.from(`${FLOWABLE_USER}:${FLOWABLE_PASS}`).toString('base64');
-
 const log = (event: string, fields: Record<string, unknown> = {}) => {
   const parts = [`${new Date().toISOString()}`, `[${SERVICE}]`, `event=${event}`];
   for (const [k, v] of Object.entries(fields)) {
@@ -21,147 +17,103 @@ const log = (event: string, fields: Record<string, unknown> = {}) => {
   console.log(parts.join(' '));
 };
 
-type FlowableTask = {
-  id: string;
-  name?: string;
-  assignee?: string | null;
-  processInstanceId?: string;
-};
+const kafka = new Kafka({
+  clientId: 'aurora-curador-mock',
+  brokers: [BROKER],
+  logLevel: logLevel.NOTHING,
+});
 
-type FlowableVariable = {
-  name: string;
-  type?: string;
-  value: unknown;
-  scope?: string;
+const consumer = kafka.consumer({ groupId: 'grupo-curador-mock-1' });
+const producer = kafka.producer();
+const admin = kafka.admin();
+
+type SolicitarCuradoriaCmd = {
+  checadorId: string;
+  nomeCompleto?: string;
+  documentos?: string;
 };
 
 type Decisao = 'credenciar' | 'recusar';
 
-let parando = false;
-
-const flowableFetch = async (path: string, init: RequestInit = {}) => {
-  const res = await fetch(`${FLOWABLE_URL}${path}`, {
-    ...init,
-    headers: {
-      Authorization: basicAuth,
-      ...(init.body ? { 'Content-Type': 'application/json' } : {}),
-      ...(init.headers ?? {}),
-    },
-  });
-  return res;
-};
-
-const listarTasksAbertas = async (): Promise<FlowableTask[]> => {
-  const res = await flowableFetch(
-    `/process-api/runtime/tasks?candidateGroup=${encodeURIComponent(CURADOR_GROUP)}&size=50`,
-  );
-  if (!res.ok) {
-    throw new Error(`GET /tasks falhou (HTTP ${res.status}): ${await res.text()}`);
-  }
-  const body = (await res.json()) as { data?: FlowableTask[] };
-  return (body.data ?? []).filter((t) => !t.assignee);
-};
-
-const lerVariaveis = async (taskId: string): Promise<Record<string, unknown>> => {
-  const res = await flowableFetch(`/process-api/runtime/tasks/${taskId}/variables`);
-  if (!res.ok) {
-    throw new Error(`GET /tasks/${taskId}/variables falhou (HTTP ${res.status}): ${await res.text()}`);
-  }
-  const body = (await res.json()) as { data?: FlowableVariable[] } | FlowableVariable[];
-  const lista = Array.isArray(body) ? body : (body.data ?? []);
-  const out: Record<string, unknown> = {};
-  for (const v of lista) out[v.name] = v.value;
-  return out;
-};
-
-const reivindicar = async (taskId: string) => {
-  const res = await flowableFetch(`/process-api/runtime/tasks/${taskId}`, {
-    method: 'POST',
-    body: JSON.stringify({ action: 'claim', assignee: CURADOR_ASSIGNEE }),
-  });
-  if (!res.ok) {
-    throw new Error(`claim ${taskId} falhou (HTTP ${res.status}): ${await res.text()}`);
-  }
-};
-
-const completar = async (taskId: string, decisao: Decisao) => {
-  const res = await flowableFetch(`/process-api/runtime/tasks/${taskId}`, {
-    method: 'POST',
-    body: JSON.stringify({
-      action: 'complete',
-      variables: [{ name: 'decisaoFinal', value: decisao }],
-    }),
-  });
-  if (!res.ok) {
-    throw new Error(`complete ${taskId} falhou (HTTP ${res.status}): ${await res.text()}`);
-  }
+type DecisaoCuradoriaEvt = {
+  // Obrigatório para que o Flowable Event Registry detecte o tipo do evento
+  // (channelEventKeyDetection.fixedValue === 'decisaoCuradoriaEvt')
+  eventKey: 'decisaoCuradoriaEvt';
+  checadorId: string;
+  decisaoFinal: Decisao;
 };
 
 const decidir = (): Decisao =>
   Math.random() < CURADOR_TAXA_APROVACAO ? 'credenciar' : 'recusar';
 
-const processarTask = async (task: FlowableTask) => {
-  const taskId = task.id;
-  let checadorId: string | undefined;
-
+const garantirTopicos = async () => {
+  await admin.connect();
   try {
-    const vars = await lerVariaveis(taskId);
-    checadorId = typeof vars.checadorId === 'string' ? vars.checadorId : undefined;
-
-    log('claim', { taskId, checadorId });
-    await reivindicar(taskId);
-
-    if (CURADOR_LATENCIA_MS > 0) await sleep(CURADOR_LATENCIA_MS);
-
-    const decisaoFinal = decidir();
-    await completar(taskId, decisaoFinal);
-    log('complete', { taskId, checadorId, decisaoFinal });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    // 404/409: outra instância já fechou a task — warning, não erro fatal.
-    const concorrencia = /HTTP 4(04|09)/.test(msg);
-    log(concorrencia ? 'skip' : 'erro', { taskId, checadorId, motivo: JSON.stringify(msg) });
+    await admin.createTopics({
+      waitForLeaders: true,
+      topics: [
+        { topic: TOPIC_IN,  numPartitions: 1, replicationFactor: 1 },
+        { topic: TOPIC_OUT, numPartitions: 1, replicationFactor: 1 },
+      ],
+    });
+  } finally {
+    await admin.disconnect();
   }
 };
 
-const loop = async () => {
+const iniciarServico = async () => {
+  await garantirTopicos();
+  await consumer.connect();
+  await producer.connect();
   log('startup', {
-    flowable: FLOWABLE_URL,
-    grupo: CURADOR_GROUP,
-    pollMs: CURADOR_POLL_MS,
+    broker: BROKER,
+    topicIn: TOPIC_IN,
+    topicOut: TOPIC_OUT,
     taxaAprovacao: CURADOR_TAXA_APROVACAO,
     latenciaMs: CURADOR_LATENCIA_MS,
   });
 
-  while (!parando) {
-    try {
-      const tasks = await listarTasksAbertas();
-      if (tasks.length > 0) {
-        log('poll', { tasksAbertas: tasks.length });
-        for (const t of tasks) {
-          if (parando) break;
-          await processarTask(t);
-        }
+  await consumer.subscribe({ topic: TOPIC_IN, fromBeginning: false });
+
+  await consumer.run({
+    eachMessage: async ({ message }) => {
+      if (!message.value) return;
+      const raw = JSON.parse(message.value.toString());
+      const cmd: SolicitarCuradoriaCmd = raw.checadorId ? raw : (raw.eventPayload ?? raw.data ?? raw);
+
+      log('in', { topic: TOPIC_IN, checadorId: cmd.checadorId });
+
+      if (CURADOR_LATENCIA_MS > 0) {
+        await new Promise((r) => setTimeout(r, CURADOR_LATENCIA_MS));
       }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      log('erro', { motivo: JSON.stringify(msg) });
-    }
-    if (!parando) await sleep(CURADOR_POLL_MS);
-  }
-  log('shutdown');
+
+      const decisaoFinal = decidir();
+      const evento: DecisaoCuradoriaEvt = {
+        eventKey: 'decisaoCuradoriaEvt',
+        checadorId: cmd.checadorId,
+        decisaoFinal,
+      };
+
+      await producer.send({
+        topic: TOPIC_OUT,
+        messages: [{ key: cmd.checadorId, value: JSON.stringify(evento) }],
+      });
+
+      log('out', { topic: TOPIC_OUT, checadorId: cmd.checadorId, decisaoFinal });
+    },
+  });
 };
 
-const desligar = () => {
-  if (parando) return;
-  parando = true;
-  log('signal');
+const desligar = async () => {
+  log('shutdown');
+  await Promise.allSettled([consumer.disconnect(), producer.disconnect()]);
+  process.exit(0);
 };
 
 process.on('SIGINT', desligar);
 process.on('SIGTERM', desligar);
 
-loop().catch((err) => {
-  console.error('[curador-mock] erro fatal:', err);
+iniciarServico().catch((err) => {
+  log('erro_fatal', { motivo: JSON.stringify(err instanceof Error ? err.message : String(err)) });
   process.exit(1);
 });

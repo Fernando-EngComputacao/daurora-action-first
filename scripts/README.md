@@ -7,10 +7,10 @@ Rode a partir da raiz do repositório para que os caminhos relativos resolvam co
 | Script | O que faz | Quando usar |
 |---|---|---|
 | `healthcheck.sh` | Confere se o Flowable REST e a API produtora respondem. | Antes de deployar ou antes de disparar uma solicitação. |
-| `deploy-flowable.sh` | Faz o deploy dos 4 artefatos do Event Registry e do BPMN, e valida que o process definition foi criado. | Toda vez que o container do Flowable for recriado (H2 in-memory perde tudo). |
+| `deploy-flowable.sh` | Faz o deploy dos 8 artefatos do Event Registry e do BPMN, e valida que o process definition foi criado. | Toda vez que o container do Flowable for recriado (H2 in-memory perde tudo). |
 | `disparar-credenciamento.sh` | Envia um `POST /credenciamento` para a API produtora e imprime o `processInstanceId`. | Para iniciar uma instância de teste do processo. |
 | `listar-instancias.sh` | Lista instâncias ativas (ou últimas concluídas) do processo, com `processInstanceId` + `businessKey` (checadorId). | Quando você perdeu o `processInstanceId` da saída do `disparar-credenciamento.sh`. |
-| `completar-tarefa.sh` | Encontra a userTask aberta da instância e completa com `decisaoFinal=credenciar\|recusar`. | **Alternativa manual** ao serviço `aurora-curador-mock`: use quando o curador-mock não estiver no ar e você quiser finalizar uma instância no terminal. |
+| `completar-tarefa.sh` | **Obsoleto.** Tentava completar a userTask "Análise Curatorial". O BPMN não tem mais userTask — a curadoria é reativa via Kafka. Mantido apenas como referência histórica. | — |
 | `demo-execucao-automatica.sh` | Dispara N credenciamentos, espera todos terminarem (timeout) e imprime sumário com distribuição (`endCredenciado` × `endRejeitada`) + p50/p95/max de duração. Exit 0 se todos terminaram. | Demo end-to-end automática (requer os 3 microsserviços rodando, incluindo o `aurora-curador-mock`). |
 
 ## Pré-requisitos
@@ -48,14 +48,7 @@ Todos os scripts seguem os mesmos defaults do `docker-compose.yml` + README. Par
 ./scripts/listar-instancias.sh             # ativas
 ./scripts/listar-instancias.sh concluidas  # últimas 20 concluídas (history)
 
-# 5. (manual) Completa a tarefa humana com decisão "credenciar"
-#    — só necessário se o aurora-curador-mock não estiver rodando.
-./scripts/completar-tarefa.sh <processInstanceId> credenciar
-
-# 5b. Ou para recusar
-./scripts/completar-tarefa.sh <processInstanceId> recusar
-
-# 6. (automático) Demo end-to-end com sumário estatístico
+# 5. (automático) Demo end-to-end com sumário estatístico
 ./scripts/demo-execucao-automatica.sh        # 5 instâncias, timeout 60s
 ./scripts/demo-execucao-automatica.sh 10     # 10 instâncias
 ./scripts/demo-execucao-automatica.sh 5 120  # 5 instâncias, timeout 120s
@@ -64,6 +57,5 @@ Todos os scripts seguem os mesmos defaults do `docker-compose.yml` + README. Par
 ## Notas
 
 - `deploy-flowable.sh` faz 1 `POST` por arquivo porque o endpoint do Event Registry ignora silenciosamente arquivos extras no multipart (pegadinha #7 do `ARCHITECTURE.md §8`).
-- `disparar-credenciamento.sh` extrai o `processInstanceId` da resposta e já imprime o comando pronto para o próximo passo (`completar-tarefa.sh`).
-- Se `completar-tarefa.sh` reclamar que não há task aberta, provavelmente os documentos foram reprovados automaticamente (80% de aprovação no mock) — confira `history/historic-process-instances/<pid>` para ver se o `endActivityId` é `endRejeitada`. **Outra possibilidade**: o `aurora-curador-mock` já reivindicou e completou a task antes de você rodar o script (ele faz polling a cada 5s).
-- `demo-execucao-automatica.sh` precisa de `python3` (parsing de JSON e estatísticas). Distribuição de duração esperada com defaults (`validador 3s` + `curador-mock` polling 5s + latência 2s): ~10s por instância.
+- `disparar-credenciamento.sh` extrai o `processInstanceId` da resposta. Como tanto o validador quanto o curador são reativos via Kafka, o processo finaliza sozinho — não há passo manual a fazer depois.
+- `demo-execucao-automatica.sh` precisa de `python3` (parsing de JSON e estatísticas). Distribuição de duração esperada com defaults (`validador 3s` + `curador 2s`): ~5s por instância.

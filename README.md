@@ -35,7 +35,11 @@ daurora-action-first/
 │   ├── validarDocumentosCmd.event
 │   ├── validarDocumentosCmdChannel.channel
 │   ├── documentosValidadosEvt.event
-│   └── documentosValidadosEvtChannel.channel
+│   ├── documentosValidadosEvtChannel.channel
+│   ├── solicitarCuradoriaCmd.event
+│   ├── solicitarCuradoriaCmdChannel.channel
+│   ├── decisaoCuradoriaEvt.event
+│   └── decisaoCuradoriaEvtChannel.channel
 │
 ├── scripts/                        # Automação dos comandos do README
 │   ├── healthcheck.sh
@@ -47,7 +51,7 @@ daurora-action-first/
 └── services/
     ├── aurora-credenciamento-api/  # Produtor HTTP — dispara o processo no Flowable
     ├── aurora-validador-docs/      # Consumidor reativo — valida documentos via Kafka
-    └── aurora-curador-mock/        # Mock do curador humano — faz polling na REST do Flowable e completa user tasks
+    └── aurora-curador-mock/        # Curador automatizado — consome solicitar-curadoria-cmd e publica decisao-curadoria-evt via Kafka
 ```
 
 Padrão para novos microsserviços: `services/<nome>/` contendo `package.json`, `tsconfig.json` e `src/index.ts`.
@@ -84,7 +88,7 @@ Aguarde ~30s para o Flowable terminar o boot. O passo 2 a seguir já valida impl
 ./scripts/deploy-flowable.sh
 ```
 
-O script publica os 4 arquivos de `flowable-events/` (um `POST` por arquivo, que é como a API aceita — veja [ARCHITECTURE §8 pegadinha #7](./ARCHITECTURE.md#8-pegadinhas-da-imagem-flowableflowable-uilatest-680)), em seguida publica o BPMN, e ao final confere que `process-definitions?key=credenciamentoChecador` retorna `total>=1`. Sai com código `1` se alguma etapa falhar.
+O script publica os 8 arquivos de `flowable-events/` (um `POST` por arquivo, que é como a API aceita — veja [ARCHITECTURE §8 pegadinha #7](./ARCHITECTURE.md#8-pegadinhas-da-imagem-flowableflowable-uilatest-680)), em seguida publica o BPMN, e ao final confere que `process-definitions?key=credenciamentoChecador` retorna `total>=1`. Sai com código `1` se alguma etapa falhar.
 
 Detalhes e variáveis de ambiente suportadas: [`scripts/README.md`](./scripts/README.md).
 
@@ -133,16 +137,16 @@ Deve imprimir:
 ```
 
 ```bash
-# Terminal C — curador mock (faz polling na REST do Flowable a cada 5s)
+# Terminal C — curador automatizado (consome solicitar-curadoria-cmd, publica decisao-curadoria-evt)
 npm run dev
 ```
 
 Deve imprimir:
 ```
-2026-04-28T12:00:00.000Z [curador-mock] event=startup flowable=http://localhost:8080/flowable-ui grupo=curadores pollMs=5000 taxaAprovacao=0.7 latenciaMs=2000
+2026-04-28T12:00:00.000Z [curador-mock] event=startup broker=localhost:9092 topicIn=solicitar-curadoria-cmd topicOut=decisao-curadoria-evt taxaAprovacao=0.7 latenciaMs=2000
 ```
 
-> O curador-mock simula um humano do grupo `curadores`: a cada `CURADOR_POLL_MS` ele lista tasks abertas, reivindica cada uma com o assignee `curador-mock` e completa com `decisaoFinal=credenciar` (probabilidade `CURADOR_TAXA_APROVACAO`, default 0,7) ou `decisaoFinal=recusar`. Para completar manualmente via UI, basta não subir o curador-mock e usar o Task App ou `scripts/completar-tarefa.sh`.
+> O curador-mock é um consumidor Kafka idêntico em formato ao validador: assina `solicitar-curadoria-cmd`, simula `CURADOR_LATENCIA_MS` (default 2000) de processamento e publica em `decisao-curadoria-evt` com `decisaoFinal=credenciar` (probabilidade `CURADOR_TAXA_APROVACAO`, default 0,7) ou `decisaoFinal=recusar`. O Flowable correlaciona o retorno pelo `checadorId` e segue o processo. Não há mais userTask — o BPMN agora é 100% reativo.
 
 ### 5. Checkpoint: tudo no ar?
 
@@ -183,25 +187,20 @@ O script já imprime o `processInstanceId` em uma linha separada e sugere o coma
 
 ### 7. Observar o fluxo pelos logs
 
-- **Terminal A** (validador) mostra `[IN ] ...` e depois `[OUT] ... documentosValidos=true|false`.
-- **Kafka UI** (http://localhost:8081) mostra mensagens trafegando nos tópicos `validar-documentos-cmd` e `documentos-validados-evt`.
+- **Terminal A** (validador) mostra `event=in ...` e depois `event=out ... documentosValidos=true|false`.
+- **Terminal C** (curador) mostra `event=in ...` e depois `event=out ... decisaoFinal=credenciar|recusar`, mas só para as instâncias que passaram na validação automática.
+- **Kafka UI** (http://localhost:8081) mostra mensagens trafegando nos quatro tópicos: `validar-documentos-cmd`, `documentos-validados-evt`, `solicitar-curadoria-cmd` e `decisao-curadoria-evt`.
 - Logs do Flowable:
   ```bash
   docker logs -f aurora-flowable | grep -iE "kafka|error"
   ```
 
-### 8. Concluir o processo
+### 8. Acompanhar a finalização do processo
 
-Quando `documentosValidos=true`, o Flowable cria a tarefa "Análise Curatorial" para o grupo `curadores`. Há três caminhos para finalizar:
+Como tanto o validador quanto o curador são reativos via Kafka, o processo finaliza sozinho em poucos segundos. Os caminhos possíveis são:
 
-- **Automático (default da demo)**: o `aurora-curador-mock` rodando no terminal C reivindica e completa a task em poucos segundos. Não há nada a fazer — basta acompanhar os logs.
-- **Manual via script**: pare o curador-mock e use
-  ```bash
-  ./scripts/completar-tarefa.sh <processInstanceId> credenciar
-  # ou para reprovar na curadoria:
-  ./scripts/completar-tarefa.sh <processInstanceId> recusar
-  ```
-- **Manual via UI**: logue no **Flowable UI → Task App** (http://localhost:8080/flowable-ui) com `admin`/`test`, clique em *Tasks*, reivindique e complete a tarefa.
+- `documentosValidos=false` → encerra direto em `endRejeitada` (~20% das instâncias).
+- `documentosValidos=true` → o Flowable publica em `solicitar-curadoria-cmd`, o curador-mock decide, publica em `decisao-curadoria-evt` e o Flowable encerra em `endCredenciado` (~80% das instâncias).
 
 Se você perdeu o `processInstanceId`, liste as instâncias:
 
@@ -211,7 +210,7 @@ Se você perdeu o `processInstanceId`, liste as instâncias:
 ./scripts/listar-instancias.sh concluidas
 ```
 
-No BPMN atual, `credenciar`/`recusar` é apenas gravado como variável; o fluxo sempre converge para `endCredenciado` — veja [ARCHITECTURE §3](./ARCHITECTURE.md#3-modelo-de-processo-bpmn--rf08).
+> No BPMN atual, `decisaoFinal` (`credenciar`/`recusar`) é gravada como variável mas não influencia o fim do processo: as duas decisões convergem para `endCredenciado`. Para que `recusar` termine em estado distinto, basta adicionar um gateway depois do `aguardarDecisaoCurador` — ver [ARCHITECTURE §9](./ARCHITECTURE.md#9-como-evoluir).
 
 ### 9. Demo end-to-end automática
 
@@ -223,7 +222,7 @@ Para ver os 3 serviços rodando o fluxo inteiro **sem nenhuma intervenção huma
 ./scripts/demo-execucao-automatica.sh 5 120  # 5 instâncias, timeout 120s
 ```
 
-O script dispara N credenciamentos via `aurora-credenciamento-api`, faz polling no `history` até todos terminarem e imprime sumário com distribuição (`endCredenciado` × `endRejeitada`) e estatísticas de duração (p50/p95/max). Sai com código 0 se todos terminaram dentro do timeout. Distribuição esperada: ~80% (validador) × ~70% (curador) ≈ 56% `endCredenciado` + ~14% `endRejeitada` via curador (mas hoje o BPMN gravita ambos para `endCredenciado` — ver [ARCHITECTURE §3](./ARCHITECTURE.md#3-modelo-de-processo-bpmn--rf08)).
+O script dispara N credenciamentos via `aurora-credenciamento-api`, faz polling no `history` até todos terminarem e imprime sumário com distribuição (`endCredenciado` × `endRejeitada`) e estatísticas de duração (p50/p95/max). Sai com código 0 se todos terminaram dentro do timeout. Distribuição esperada: ~80% `endCredenciado` (passou no validador) + ~20% `endRejeitada` (reprovado no validador). A `decisaoFinal` do curador é registrada na variável do processo mas não influencia o `endActivityId` enquanto o BPMN não tiver gateway pós-curadoria — ver [ARCHITECTURE §9](./ARCHITECTURE.md#9-como-evoluir).
 
 ---
 
@@ -242,6 +241,8 @@ O script dispara N credenciamentos via `aurora-credenciamento-api`, faz polling 
 |---|---|---|
 | `validar-documentos-cmd` | Flowable ➜ validador | `{ checadorId, nomeCompleto, documentos }` |
 | `documentos-validados-evt` | validador ➜ Flowable | `{ eventKey: "documentosValidadosEvt", checadorId, documentosValidos }` |
+| `solicitar-curadoria-cmd` | Flowable ➜ curador | `{ checadorId, nomeCompleto, documentos }` |
+| `decisao-curadoria-evt` | curador ➜ Flowable | `{ eventKey: "decisaoCuradoriaEvt", checadorId, decisaoFinal }` |
 
 ### Variáveis de ambiente suportadas
 
@@ -253,10 +254,7 @@ O script dispara N credenciamentos via `aurora-credenciamento-api`, faz polling 
 | `aurora-credenciamento-api` | `FLOWABLE_USER` | `admin` |
 | `aurora-credenciamento-api` | `FLOWABLE_PASS` | `test` |
 | `aurora-credenciamento-api` | `PROCESS_KEY` | `credenciamentoChecador` |
-| `aurora-curador-mock` | `FLOWABLE_URL` / `FLOWABLE_USER` / `FLOWABLE_PASS` | mesmos defaults da API |
-| `aurora-curador-mock` | `CURADOR_GROUP` | `curadores` |
-| `aurora-curador-mock` | `CURADOR_ASSIGNEE` | `curador-mock` |
-| `aurora-curador-mock` | `CURADOR_POLL_MS` | `5000` |
+| `aurora-curador-mock` | `KAFKA_BROKER` | `localhost:9092` |
 | `aurora-curador-mock` | `CURADOR_TAXA_APROVACAO` | `0.7` |
 | `aurora-curador-mock` | `CURADOR_LATENCIA_MS` | `2000` |
 
